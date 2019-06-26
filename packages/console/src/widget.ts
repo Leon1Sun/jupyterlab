@@ -22,13 +22,13 @@ import { nbformat } from '@jupyterlab/coreutils';
 
 import { IObservableList, ObservableList } from '@jupyterlab/observables';
 
-import { RenderMimeRegistry } from '@jupyterlab/rendermime';
+import { IRenderMimeRegistry } from '@jupyterlab/rendermime';
 
 import { KernelMessage } from '@jupyterlab/services';
 
 import { each } from '@phosphor/algorithm';
 
-import { MimeData } from '@phosphor/coreutils';
+import { MimeData, JSONObject } from '@phosphor/coreutils';
 
 import { Drag } from '@phosphor/dragdrop';
 
@@ -165,7 +165,7 @@ export class CodeConsole extends Widget {
   /**
    * The rendermime instance used by the console.
    */
-  readonly rendermime: RenderMimeRegistry;
+  readonly rendermime: IRenderMimeRegistry;
 
   /**
    * The client session used by the console.
@@ -337,9 +337,12 @@ export class CodeConsole extends Widget {
    *
    * @returns A promise that indicates when the injected cell's execution ends.
    */
-  inject(code: string): Promise<void> {
+  inject(code: string, metadata: JSONObject = {}): Promise<void> {
     let cell = this.createCodeCell();
     cell.model.value.text = code;
+    for (let key of Object.keys(metadata)) {
+      cell.model.metadata.set(key, metadata[key]);
+    }
     this.addCell(cell);
     return this._execute(cell);
   }
@@ -643,7 +646,7 @@ export class CodeConsole extends Widget {
         return;
       }
       if (value && value.content.status === 'ok') {
-        let content = value.content as KernelMessage.IExecuteOkReply;
+        let content = value.content;
         // Use deprecated payloads for backwards compatibility.
         if (content.payload && content.payload.length) {
           let setNextInput = content.payload.filter(i => {
@@ -679,7 +682,11 @@ export class CodeConsole extends Widget {
   /**
    * Update the console based on the kernel info.
    */
-  private _handleInfo(info: KernelMessage.IInfoReply): void {
+  private _handleInfo(info: KernelMessage.IInfoReplyMsg['content']): void {
+    if (info.status !== 'ok') {
+      this._banner.model.value.text = 'Error in getting kernel banner';
+      return;
+    }
     this._banner.model.value.text = info.banner;
     let lang = info.language_info as nbformat.ILanguageInfoMetadata;
     this._mimetype = this._mimeTypeService.getMimeTypeByLanguage(lang);
@@ -781,8 +788,7 @@ export class CodeConsole extends Widget {
       if (!kernel) {
         return;
       }
-      kernel
-        .requestKernelInfo()
+      kernel.ready
         .then(() => {
           if (this.isDisposed || !kernel || !kernel.info) {
             return;
@@ -794,6 +800,7 @@ export class CodeConsole extends Widget {
         });
     } else if (this.session.status === 'restarting') {
       this.addBanner();
+      this._handleInfo(this.session.kernel.info);
     }
   }
 
@@ -834,7 +841,7 @@ export namespace CodeConsole {
     /**
      * The mime renderer for the console widget.
      */
-    rendermime: RenderMimeRegistry;
+    rendermime: IRenderMimeRegistry;
 
     /**
      * The client session for the console widget.

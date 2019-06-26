@@ -1,10 +1,14 @@
 {
   "name": "@jupyterlab/vdom-extension",
-  "version": "1.0.0-alpha.6",
+  "version": "1.0.0-rc.0",
   "description": "JupyterLab - VDOM Renderer",
   "homepage": "https://github.com/jupyterlab/jupyterlab",
   "bugs": {
     "url": "https://github.com/jupyterlab/jupyterlab/issues"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/jupyterlab/jupyterlab.git"
   },
   "license": "BSD-3-Clause",
   "author": "Project Jupyter",
@@ -13,14 +17,14 @@
     "lib/*.js",
     "style/*"
   ],
+  "sideEffects": [
+    "style/**/*"
+  ],
   "main": "lib/index.js",
   "types": "lib/index.d.ts",
+  "style": "style/index.css",
   "directories": {
     "lib": "lib/"
-  },
-  "repository": {
-    "type": "git",
-    "url": "https://github.com/jupyterlab/jupyterlab.git"
   },
   "scripts": {
     "build": "tsc -b",
@@ -30,17 +34,17 @@
     "watch": "tsc -b --watch"
   },
   "dependencies": {
-    "@jupyterlab/application": "^1.0.0-alpha.6",
-    "@jupyterlab/apputils": "^1.0.0-alpha.6",
-    "@jupyterlab/docregistry": "^1.0.0-alpha.6",
-    "@jupyterlab/notebook": "^1.0.0-alpha.7",
-    "@jupyterlab/rendermime": "^1.0.0-alpha.6",
-    "@jupyterlab/vdom": "^1.0.0-alpha.6"
+    "@jupyterlab/application": "^1.0.0-rc.0",
+    "@jupyterlab/apputils": "^1.0.0-rc.0",
+    "@jupyterlab/docregistry": "^1.0.0-rc.0",
+    "@jupyterlab/notebook": "^1.0.0-rc.0",
+    "@jupyterlab/rendermime": "^1.0.0-rc.0",
+    "@jupyterlab/vdom": "^1.0.0-rc.0"
   },
   "devDependencies": {
     "rimraf": "~2.6.2",
     "typedoc": "^0.14.2",
-    "typescript": "~3.4.3"
+    "typescript": "~3.5.1"
   },
   "publishConfig": {
     "access": "public"

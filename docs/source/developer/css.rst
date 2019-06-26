@@ -90,9 +90,16 @@ We are organizing our CSS files in the following manner:
 -  Each package in the top-level ``packages`` directory should contain
    any CSS files in a ``style`` subdirectory that are needed to style
    itself.
--  Multiple CSS files may be used and organized as needed, but they
-   should be imported into a single ``index.css`` at the top-level of
-   the plugin as `import '../style/index.css';`.
+-  All local styles should be consolidated into a ``style/base.css`` file.
+-  The top level ``index.css`` file is templated by ``buildutils`` as
+   part of the ``integrity`` script.  It imports the CSS in dependency order,
+   ending with the local ``./base.css``.  CSS from external libraries is
+   determined by their ``style`` field in ``package.json``.  If additional
+   files are desired or the external library does not have a ``style`` field,
+   we use the ``jupyterlab: { "extraStyles": { "fooLibrary": ["path/to/css"] } }``
+   pattern in our ``package.json`` to declare them.  For imports that should not be added to ``index.css`, update ``SKIP_CSS`` in ``buildutils/src/ensure-repo.ts``.
+
+
 
 CSS class names
 ~~~~~~~~~~~~~~~
@@ -199,10 +206,11 @@ Commonly used CSS selectors
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
 We use CSS selectors to decide which context menu items to display and what command
-to invoke when a keyboard shortcut is used. The following common CSS selectors are 
+to invoke when a keyboard shortcut is used. The following common CSS selectors are
 intended to be used for adding context menu items and keyboard shortcuts.
 
 **CSS classes that target widgets and their children**
+
 -  ``jp-Activity``: applied to elements in the main work area
 -  ``jp-Cell``: applied to cells
 -  ``jp-CodeCell``: applied to code cells
@@ -218,7 +226,9 @@ intended to be used for adding context menu items and keyboard shortcuts.
 -  ``jp-SettingEditor``: applied to setting editors
 -  ``jp-SideBar``: applied to sidebars
 -  ``jp-Terminal``: applied to terminals
+
 **CSS classes that describe the state of a widget**
+
 -  ``jp-mod-current``: applied to elements on the current document only
 -  ``jp-mod-completer-enabled``: applied to ediors that can host a completer
 -  ``jp-mod-commandMode``: applied to a notebook in command mode
@@ -226,7 +236,9 @@ intended to be used for adding context menu items and keyboard shortcuts.
 -  ``jp-mod-has-primary-selection``: applied to editors that have a primary selection
 -  ``jp-mod-in-leading-whitespace``: applied to editors that have a selection within the beginning whitespace of a line
 -  ``jp-mod-tooltip``: applied to the body when a tooltip exists on the page
+
 **CSS selectors that target data attributes**
+
 -  ``[data-jp-code-runner]``: applied to widgets that can run code
 -  ``[data-jp-interaction-mode="terminal"]``: applied when a code console is in terminal mode
 -  ``[data-jp-interaction-mode="notebook"]``: applied when a code console is in notebook mode

@@ -19,7 +19,11 @@ import { Kernel } from './kernel';
 
 import { KernelMessage } from './messages';
 
-import { KernelFutureHandler } from './future';
+import {
+  KernelFutureHandler,
+  KernelShellFutureHandler,
+  KernelControlFutureHandler
+} from './future';
 
 import * as serialize from './serialize';
 
@@ -57,8 +61,11 @@ export class DefaultKernel implements Kernel.IKernel {
       options.serverSettings || ServerConnection.makeSettings();
     this._clientId = options.clientId || UUID.uuid4();
     this._username = options.username || '';
-    this._futures = new Map<string, KernelFutureHandler>();
-    this._comms = new Map<string, Kernel.IComm>();
+
+    void this._readyPromise.promise.then(() => {
+      this._sendPending();
+    });
+
     this._createSocket();
     Private.runningKernels.push(this);
   }
@@ -187,7 +194,7 @@ export class DefaultKernel implements Kernel.IKernel {
    * A promise that is fulfilled when the kernel is ready.
    */
   get ready(): Promise<void> {
-    return this._connectionPromise.promise;
+    return this._readyPromise.promise;
   }
 
   /**
@@ -227,10 +234,9 @@ export class DefaultKernel implements Kernel.IKernel {
       return;
     }
     this._isDisposed = true;
-    this._terminated.emit(void 0);
+    this._terminated.emit();
     this._status = 'dead';
-    // TODO: Kernel status rework should avoid doing
-    // anything asynchronous in the disposal.
+    // Trigger the async _clearState, but do not wait for it.
     void this._clearState();
     this._clearSocket();
     this._kernelSession = '';
@@ -257,11 +263,64 @@ export class DefaultKernel implements Kernel.IKernel {
    *
    * If the kernel status is `dead`, this will throw an error.
    */
-  sendShellMessage(
-    msg: KernelMessage.IShellMessage,
+  sendShellMessage<T extends KernelMessage.ShellMessageType>(
+    msg: KernelMessage.IShellMessage<T>,
     expectReply = false,
     disposeOnDone = true
-  ): Kernel.IFuture {
+  ): Kernel.IShellFuture<KernelMessage.IShellMessage<T>> {
+    return this._sendKernelShellControl(
+      KernelShellFutureHandler,
+      msg,
+      expectReply,
+      disposeOnDone
+    ) as Kernel.IShellFuture<KernelMessage.IShellMessage<T>>;
+  }
+
+  /**
+   * Send a control message to the kernel.
+   *
+   * #### Notes
+   * Send a message to the kernel's control channel, yielding a future object
+   * for accepting replies.
+   *
+   * If `expectReply` is given and `true`, the future is disposed when both a
+   * control reply and an idle status message are received. If `expectReply`
+   * is not given or is `false`, the future is resolved when an idle status
+   * message is received.
+   * If `disposeOnDone` is not given or is `true`, the Future is disposed at this point.
+   * If `disposeOnDone` is given and `false`, it is up to the caller to dispose of the Future.
+   *
+   * All replies are validated as valid kernel messages.
+   *
+   * If the kernel status is `dead`, this will throw an error.
+   */
+  sendControlMessage<T extends KernelMessage.ControlMessageType>(
+    msg: KernelMessage.IControlMessage<T>,
+    expectReply = false,
+    disposeOnDone = true
+  ): Kernel.IControlFuture<KernelMessage.IControlMessage<T>> {
+    return this._sendKernelShellControl(
+      KernelControlFutureHandler,
+      msg,
+      expectReply,
+      disposeOnDone
+    ) as Kernel.IControlFuture<KernelMessage.IControlMessage<T>>;
+  }
+
+  private _sendKernelShellControl<
+    REQUEST extends KernelMessage.IShellControlMessage,
+    REPLY extends KernelMessage.IShellControlMessage,
+    KFH extends new (...params: any[]) => KernelFutureHandler<REQUEST, REPLY>,
+    T extends KernelMessage.IMessage
+  >(
+    ctor: KFH,
+    msg: T,
+    expectReply = false,
+    disposeOnDone = true
+  ): Kernel.IFuture<
+    KernelMessage.IShellControlMessage,
+    KernelMessage.IShellControlMessage
+  > {
     if (this.status === 'dead') {
       throw new Error('Kernel is dead');
     }
@@ -271,7 +330,7 @@ export class DefaultKernel implements Kernel.IKernel {
       this._ws.send(serialize.serialize(msg));
     }
     this._anyMessage.emit({ msg, direction: 'send' });
-    let future = new KernelFutureHandler(
+    let future = new ctor(
       () => {
         let msgId = msg.header.msg_id;
         this._futures.delete(msgId);
@@ -349,7 +408,6 @@ export class DefaultKernel implements Kernel.IKernel {
   async handleRestart(): Promise<void> {
     await this._clearState();
     this._updateStatus('restarting');
-    this._clearSocket();
   }
 
   /**
@@ -362,7 +420,7 @@ export class DefaultKernel implements Kernel.IKernel {
     this._clearSocket();
     this._updateStatus('reconnecting');
     this._createSocket();
-    return this._connectionPromise.promise;
+    return this._readyPromise.promise;
   }
 
   /**
@@ -376,8 +434,8 @@ export class DefaultKernel implements Kernel.IKernel {
    * On a valid response, closes the websocket and disposes of the kernel
    * object, and fulfills the promise.
    *
-   * The promise will be rejected if the kernel status is `Dead` or if the
-   * request fails or the response is invalid.
+   * If the kernel is already `dead`, it closes the websocket and returns
+   * without a server request.
    */
   async shutdown(): Promise<void> {
     if (this.status === 'dead') {
@@ -398,25 +456,24 @@ export class DefaultKernel implements Kernel.IKernel {
    *
    * Fulfills with the `kernel_info_response` content when the shell reply is
    * received and validated.
-   *
-   * TODO: this should be automatically run every time our kernel restarts,
-   * before we say the kernel is ready, and cache the info and the kernel
-   * session id. Further calls to this should returned the cached results.
    */
   async requestKernelInfo(): Promise<KernelMessage.IInfoReplyMsg> {
-    let options: KernelMessage.IOptions = {
+    let msg = KernelMessage.createMessage({
       msgType: 'kernel_info_request',
       channel: 'shell',
       username: this._username,
-      session: this._clientId
-    };
-    let msg = KernelMessage.createShellMessage(options);
+      session: this._clientId,
+      content: {}
+    });
     let reply = (await Private.handleShellMessage(
       this,
       msg
     )) as KernelMessage.IInfoReplyMsg;
     if (this.isDisposed) {
       throw new Error('Disposed kernel');
+    }
+    if (reply.content.status !== 'ok') {
+      throw new Error('Kernel info reply errored');
     }
     this._info = reply.content;
     return reply;
@@ -432,15 +489,15 @@ export class DefaultKernel implements Kernel.IKernel {
    * received and validated.
    */
   requestComplete(
-    content: KernelMessage.ICompleteRequest
+    content: KernelMessage.ICompleteRequestMsg['content']
   ): Promise<KernelMessage.ICompleteReplyMsg> {
-    let options: KernelMessage.IOptions = {
+    let msg = KernelMessage.createMessage({
       msgType: 'complete_request',
       channel: 'shell',
       username: this._username,
-      session: this._clientId
-    };
-    let msg = KernelMessage.createShellMessage(options, content);
+      session: this._clientId,
+      content
+    });
     return Private.handleShellMessage(this, msg) as Promise<
       KernelMessage.ICompleteReplyMsg
     >;
@@ -456,15 +513,15 @@ export class DefaultKernel implements Kernel.IKernel {
    * received and validated.
    */
   requestInspect(
-    content: KernelMessage.IInspectRequest
+    content: KernelMessage.IInspectRequestMsg['content']
   ): Promise<KernelMessage.IInspectReplyMsg> {
-    let options: KernelMessage.IOptions = {
+    let msg = KernelMessage.createMessage({
       msgType: 'inspect_request',
       channel: 'shell',
       username: this._username,
-      session: this._clientId
-    };
-    let msg = KernelMessage.createShellMessage(options, content);
+      session: this._clientId,
+      content: content
+    });
     return Private.handleShellMessage(this, msg) as Promise<
       KernelMessage.IInspectReplyMsg
     >;
@@ -480,15 +537,15 @@ export class DefaultKernel implements Kernel.IKernel {
    * received and validated.
    */
   requestHistory(
-    content: KernelMessage.IHistoryRequest
+    content: KernelMessage.IHistoryRequestMsg['content']
   ): Promise<KernelMessage.IHistoryReplyMsg> {
-    let options: KernelMessage.IOptions = {
+    let msg = KernelMessage.createMessage({
       msgType: 'history_request',
       channel: 'shell',
       username: this._username,
-      session: this._clientId
-    };
-    let msg = KernelMessage.createShellMessage(options, content);
+      session: this._clientId,
+      content
+    });
     return Private.handleShellMessage(this, msg) as Promise<
       KernelMessage.IHistoryReplyMsg
     >;
@@ -510,16 +567,13 @@ export class DefaultKernel implements Kernel.IKernel {
    * **See also:** [[IExecuteReply]]
    */
   requestExecute(
-    content: KernelMessage.IExecuteRequest,
+    content: KernelMessage.IExecuteRequestMsg['content'],
     disposeOnDone: boolean = true,
     metadata?: JSONObject
-  ): Kernel.IFuture {
-    let options: KernelMessage.IOptions = {
-      msgType: 'execute_request',
-      channel: 'shell',
-      username: this._username,
-      session: this._clientId
-    };
+  ): Kernel.IShellFuture<
+    KernelMessage.IExecuteRequestMsg,
+    KernelMessage.IExecuteReplyMsg
+  > {
     let defaults: JSONObject = {
       silent: false,
       store_history: true,
@@ -527,9 +581,21 @@ export class DefaultKernel implements Kernel.IKernel {
       allow_stdin: true,
       stop_on_error: false
     };
-    content = { ...defaults, ...content };
-    let msg = KernelMessage.createShellMessage(options, content, metadata);
-    return this.sendShellMessage(msg, true, disposeOnDone);
+    let msg = KernelMessage.createMessage({
+      msgType: 'execute_request',
+      channel: 'shell',
+      username: this._username,
+      session: this._clientId,
+      content: { ...defaults, ...content }
+    });
+    return this.sendShellMessage(
+      msg,
+      true,
+      disposeOnDone
+    ) as Kernel.IShellFuture<
+      KernelMessage.IExecuteRequestMsg,
+      KernelMessage.IExecuteReplyMsg
+    >;
   }
 
   /**
@@ -542,15 +608,15 @@ export class DefaultKernel implements Kernel.IKernel {
    * received and validated.
    */
   requestIsComplete(
-    content: KernelMessage.IIsCompleteRequest
+    content: KernelMessage.IIsCompleteRequestMsg['content']
   ): Promise<KernelMessage.IIsCompleteReplyMsg> {
-    let options: KernelMessage.IOptions = {
+    let msg = KernelMessage.createMessage({
       msgType: 'is_complete_request',
       channel: 'shell',
       username: this._username,
-      session: this._clientId
-    };
-    let msg = KernelMessage.createShellMessage(options, content);
+      session: this._clientId,
+      content
+    });
     return Private.handleShellMessage(this, msg) as Promise<
       KernelMessage.IIsCompleteReplyMsg
     >;
@@ -564,15 +630,15 @@ export class DefaultKernel implements Kernel.IKernel {
    * received and validated.
    */
   requestCommInfo(
-    content: KernelMessage.ICommInfoRequest
+    content: KernelMessage.ICommInfoRequestMsg['content']
   ): Promise<KernelMessage.ICommInfoReplyMsg> {
-    let options: KernelMessage.IOptions = {
+    let msg = KernelMessage.createMessage({
       msgType: 'comm_info_request',
       channel: 'shell',
       username: this._username,
-      session: this._clientId
-    };
-    let msg = KernelMessage.createShellMessage(options, content);
+      session: this._clientId,
+      content
+    });
     return Private.handleShellMessage(this, msg) as Promise<
       KernelMessage.ICommInfoReplyMsg
     >;
@@ -584,17 +650,17 @@ export class DefaultKernel implements Kernel.IKernel {
    * #### Notes
    * See [Messaging in Jupyter](https://jupyter-client.readthedocs.io/en/latest/messaging.html#messages-on-the-stdin-router-dealer-sockets).
    */
-  sendInputReply(content: KernelMessage.IInputReply): void {
+  sendInputReply(content: KernelMessage.IInputReplyMsg['content']): void {
     if (this.status === 'dead') {
       throw new Error('Kernel is dead');
     }
-    let options: KernelMessage.IOptions = {
+    let msg = KernelMessage.createMessage({
       msgType: 'input_reply',
       channel: 'stdin',
       username: this._username,
-      session: this._clientId
-    };
-    let msg = KernelMessage.createMessage(options, content);
+      session: this._clientId,
+      content
+    });
     if (!this._isReady || !this._ws) {
       this._pendingMessages.push(msg);
     } else {
@@ -739,12 +805,14 @@ export class DefaultKernel implements Kernel.IKernel {
       // We've seen it before, update existing outputs with same display_id
       // by handling display_data as update_display_data.
       let updateMsg: KernelMessage.IMessage = {
-        header: JSONExt.deepCopy(msg.header) as KernelMessage.IHeader,
-        parent_header: JSONExt.deepCopy(
-          msg.parent_header
-        ) as KernelMessage.IHeader,
+        header: (JSONExt.deepCopy(
+          (msg.header as unknown) as JSONObject
+        ) as unknown) as KernelMessage.IHeader,
+        parent_header: (JSONExt.deepCopy(
+          (msg.parent_header as unknown) as JSONObject
+        ) as unknown) as KernelMessage.IHeader,
         metadata: JSONExt.deepCopy(msg.metadata),
-        content: JSONExt.deepCopy(msg.content),
+        content: JSONExt.deepCopy(msg.content as JSONObject),
         channel: msg.channel,
         buffers: msg.buffers ? msg.buffers.slice() : []
       };
@@ -787,10 +855,13 @@ export class DefaultKernel implements Kernel.IKernel {
 
   /**
    * Clear the socket state.
+   *
+   * #### Notes
+   * When calling this, you should also set the status to something like
+   * 'reconnecting' to reset the kernel ready state.
    */
   private _clearSocket(): void {
     this._wsStopped = true;
-    this._isReady = false;
     if (this._ws !== null) {
       // Clear the websocket event handlers and the socket itself.
       this._ws.onopen = this._noOp;
@@ -807,16 +878,44 @@ export class DefaultKernel implements Kernel.IKernel {
    */
   private _updateStatus(status: Kernel.Status): void {
     switch (status) {
-      case 'starting':
       case 'idle':
       case 'busy':
-      case 'connected':
-        this._isReady = true;
+        if (!this._isReady && this._initialized) {
+          this._isReady = true;
+          this._readyPromise.resolve();
+        }
         break;
       case 'restarting':
+        // Send a kernel_info_request to get to a known kernel state.
+        void this.requestKernelInfo().catch(this._noOp);
+        break;
+      case 'starting':
+      case 'autorestarting':
+        // 'starting' can happen at initialization or 'restarting'.
+        // 'autorestarting' is always preceded by 'restarting'. In either case,
+        // the 'restarting' handler above is fine, so we do nothing here.
+        /* no-op */
+        break;
+      case 'connected':
+        // requestKernelInfo is sent by the onWSOpen
+        break;
       case 'reconnecting':
+        if (this._isReady) {
+          this._isReady = false;
+          this._readyPromise = new PromiseDelegate();
+          void this._readyPromise.promise.then(() => {
+            // when we are ready again, send any pending messages.
+            this._sendPending();
+          });
+        }
+        break;
       case 'dead':
-        this._isReady = false;
+        if (this._isReady) {
+          this._isReady = false;
+          this._readyPromise = new PromiseDelegate();
+        }
+        void this._readyPromise.promise.catch(this._noOp);
+        this._readyPromise.reject('Kernel is dead');
         break;
       default:
         console.error('invalid kernel status:', status);
@@ -829,9 +928,6 @@ export class DefaultKernel implements Kernel.IKernel {
       if (status === 'dead') {
         this.dispose();
       }
-    }
-    if (this._isReady) {
-      this._sendPending();
     }
   }
 
@@ -853,26 +949,29 @@ export class DefaultKernel implements Kernel.IKernel {
    * Clear the internal state.
    */
   private async _clearState(): Promise<void> {
-    this._isReady = false;
     this._pendingMessages = [];
-    const futuresResolved: Promise<KernelMessage.IShellMessage>[] = [];
+    const futuresResolved: Promise<void>[] = [];
     this._futures.forEach(future => {
+      futuresResolved.push(future.done.then(this._noOp, this._noOp));
       future.dispose();
-      futuresResolved.push(future.done);
     });
     this._comms.forEach(comm => {
       comm.dispose();
     });
     this._msgChain = Promise.resolve();
     this._kernelSession = '';
-    this._futures = new Map<string, KernelFutureHandler>();
+    this._futures = new Map<
+      string,
+      KernelFutureHandler<
+        KernelMessage.IShellControlMessage,
+        KernelMessage.IShellControlMessage
+      >
+    >();
     this._comms = new Map<string, Kernel.IComm>();
     this._displayIdToParentIds.clear();
     this._msgIdToDisplayIds.clear();
 
-    await Promise.all(futuresResolved).catch(() => {
-      /* no-op */
-    });
+    await Promise.all(futuresResolved);
   }
 
   /**
@@ -1006,7 +1105,6 @@ export class DefaultKernel implements Kernel.IKernel {
       url = url + `&token=${encodeURIComponent(token)}`;
     }
 
-    this._connectionPromise = new PromiseDelegate<void>();
     this._wsStopped = false;
     this._ws = new settings.WebSocket(url);
 
@@ -1024,19 +1122,26 @@ export class DefaultKernel implements Kernel.IKernel {
    */
   private _onWSOpen = (evt: Event) => {
     this._reconnectAttempt = 0;
-    // Allow the message to get through.
-    this._isReady = true;
-    // Update our status to connected.
     this._updateStatus('connected');
+
+    // We temporarily set the ready status to true so our kernel info request
+    // below will go through.
+    this._isReady = true;
+
     // Get the kernel info, signaling that the kernel is ready.
-    // TODO: requestKernelInfo shouldn't make a request, but should return cached info?
     this.requestKernelInfo()
       .then(() => {
-        this._connectionPromise.resolve(void 0);
+        this._initialized = true;
+        this._isReady = true;
+        this._readyPromise.resolve();
       })
       .catch(err => {
-        this._connectionPromise.reject(err);
+        this._initialized = true;
+        this._readyPromise.reject(err);
       });
+
+    // Reset the isReady status after we sent our message so others wait for
+    // the kernel info request to come back.
     this._isReady = false;
   };
 
@@ -1084,22 +1189,20 @@ export class DefaultKernel implements Kernel.IKernel {
     let handled = false;
 
     // Check to see if we have a display_id we need to reroute.
-    if (msg.parent_header && msg.channel === 'iopub') {
-      switch (msg.header.msg_type) {
-        case 'display_data':
-        case 'update_display_data':
-        case 'execute_result':
-          // display_data messages may re-route based on their display_id.
-          let transient = (msg.content.transient || {}) as JSONObject;
-          let displayId = transient['display_id'] as string;
-          if (displayId) {
-            handled = await this._handleDisplayId(displayId, msg);
-            // The await above may make this message out of date, so check again.
-            this._assertCurrentMessage(msg);
-          }
-          break;
-        default:
-          break;
+    if (
+      msg.parent_header &&
+      msg.channel === 'iopub' &&
+      (KernelMessage.isDisplayDataMsg(msg) ||
+        KernelMessage.isUpdateDisplayDataMsg(msg) ||
+        KernelMessage.isExecuteResultMsg(msg))
+    ) {
+      // display_data messages may re-route based on their display_id.
+      let transient = (msg.content.transient || {}) as JSONObject;
+      let displayId = transient['display_id'] as string;
+      if (displayId) {
+        handled = await this._handleDisplayId(displayId, msg);
+        // The await above may make this message out of date, so check again.
+        this._assertCurrentMessage(msg);
       }
     }
 
@@ -1121,9 +1224,22 @@ export class DefaultKernel implements Kernel.IKernel {
       switch (msg.header.msg_type) {
         case 'status':
           // Updating the status is synchronous, and we call no async user code
-          this._updateStatus(
-            (msg as KernelMessage.IStatusMsg).content.execution_state
-          );
+          let executionState = (msg as KernelMessage.IStatusMsg).content
+            .execution_state;
+          this._updateStatus(executionState);
+          if (executionState === 'restarting') {
+            // After processing for this message is completely done, we want to
+            // handle this restart, so we don't await, but instead schedule the
+            // work as a microtask. We schedule this here so that it comes
+            // before any microtasks scheduled in the signal emission below.
+            void Promise.resolve().then(async () => {
+              // handleRestart changes the status to 'restarting', so we call it
+              // first so that the status won't flip back and forth between
+              // 'restarting' and 'autorestarting'.
+              await this.handleRestart();
+              this._updateStatus('autorestarting');
+            });
+          }
           break;
         case 'comm_open':
           await this._handleCommOpen(msg as KernelMessage.ICommOpenMsg);
@@ -1166,9 +1282,6 @@ export class DefaultKernel implements Kernel.IKernel {
       this._reconnectAttempt += 1;
     } else {
       this._updateStatus('dead');
-      this._connectionPromise.reject(
-        new Error('Could not establish connection')
-      );
     }
   };
 
@@ -1184,8 +1297,16 @@ export class DefaultKernel implements Kernel.IKernel {
   private _reconnectLimit = 7;
   private _reconnectAttempt = 0;
   private _isReady = false;
-  private _futures: Map<string, KernelFutureHandler>;
-  private _comms: Map<string, Kernel.IComm>;
+  private _readyPromise = new PromiseDelegate<void>();
+  private _initialized = false;
+  private _futures = new Map<
+    string,
+    KernelFutureHandler<
+      KernelMessage.IShellControlMessage,
+      KernelMessage.IShellControlMessage
+    >
+  >();
+  private _comms = new Map<string, Kernel.IComm>();
   private _targetRegistry: {
     [key: string]: (
       comm: Kernel.IComm,
@@ -1194,7 +1315,6 @@ export class DefaultKernel implements Kernel.IKernel {
   } = Object.create(null);
   private _info: KernelMessage.IInfoReply | null = null;
   private _pendingMessages: KernelMessage.IMessage[] = [];
-  private _connectionPromise: PromiseDelegate<void>;
   private _specPromise: Promise<Kernel.ISpecModel>;
   private _statusChanged = new Signal<this, Kernel.Status>(this);
   private _iopubMessage = new Signal<this, KernelMessage.IIOPubMessage>(this);
@@ -1530,11 +1650,6 @@ namespace Private {
     );
     let init = { method: 'POST' };
 
-    // TODO: If we handleRestart before making the server request, we sever the
-    // communication link before the shutdown_reply message comes, so we end up
-    // getting the shutdown_reply messages after we reconnect, which is weird.
-    // We might want to move the handleRestart to after we get the response back
-
     // Handle the restart on all of the kernels with the same id.
     await Promise.all(
       runningKernels.filter(k => k.id === kernel.id).map(k => k.handleRestart())
@@ -1545,13 +1660,6 @@ namespace Private {
     }
     let data = await response.json();
     validate.validateModel(data);
-    // Reconnect the other kernels asynchronously, but don't wait for them.
-    each(runningKernels, k => {
-      if (k !== kernel && k.id === kernel.id) {
-        void k.reconnect();
-      }
-    });
-    await kernel.reconnect();
   }
 
   /**

@@ -1,6 +1,8 @@
 // Copyright (c) Jupyter Development Team.
 // Distributed under the terms of the Modified BSD License.
 
+import { Debouncer } from '@jupyterlab/coreutils';
+
 import { DocumentRegistry } from '@jupyterlab/docregistry';
 
 import { ArrayExt, find, IIterator, iter, toArray } from '@phosphor/algorithm';
@@ -52,16 +54,11 @@ const ACTIVE_CLASS = 'jp-mod-active';
  */
 const DEFAULT_RANK = 500;
 
-/**
- * The data attribute added to the document body indicating shell's mode.
- */
-const MODE_ATTRIBUTE = 'data-shell-mode';
-
 const ACTIVITY_CLASS = 'jp-Activity';
 
 /* tslint:disable */
 /**
- * The layout restorer token.
+ * The JupyterLab application shell token.
  */
 export const ILabShell = new Token<ILabShell>(
   '@jupyterlab/application:ILabShell'
@@ -69,7 +66,7 @@ export const ILabShell = new Token<ILabShell>(
 /* tslint:enable */
 
 /**
- * The JupyterLab application shell.
+ * The JupyterLab application shell interface.
  */
 export interface ILabShell extends LabShell {}
 
@@ -359,8 +356,8 @@ export class LabShell extends Widget implements JupyterFrontEnd.IShell {
         dock.activateWidget(this.currentWidget);
       }
 
-      // Set the mode data attribute on the document body.
-      document.body.setAttribute(MODE_ATTRIBUTE, mode);
+      // Set the mode data attribute on the application shell node.
+      this.node.dataset.shellMode = mode;
       return;
     }
 
@@ -399,8 +396,8 @@ export class LabShell extends Widget implements JupyterFrontEnd.IShell {
       dock.activateWidget(applicationCurrentWidget);
     }
 
-    // Set the mode data attribute on the document body.
-    document.body.setAttribute(MODE_ATTRIBUTE, mode);
+    // Set the mode data attribute on the applications shell node.
+    this.node.dataset.shellMode = mode;
   }
 
   /**
@@ -537,6 +534,17 @@ export class LabShell extends Widget implements JupyterFrontEnd.IShell {
   collapseRight(): void {
     this._rightHandler.collapse();
     this._onLayoutModified();
+  }
+
+  /**
+   * Dispose the shell.
+   */
+  dispose(): void {
+    if (this.isDisposed) {
+      return;
+    }
+    this._layoutDebouncer.dispose();
+    super.dispose();
   }
 
   /**
@@ -681,7 +689,7 @@ export class LabShell extends Widget implements JupyterFrontEnd.IShell {
    * Handle `after-attach` messages for the application shell.
    */
   protected onAfterAttach(msg: Message): void {
-    document.body.setAttribute(MODE_ATTRIBUTE, this.mode);
+    this.node.dataset.shellMode = this.mode;
   }
 
   /**
@@ -729,11 +737,16 @@ export class LabShell extends Widget implements JupyterFrontEnd.IShell {
 
     const dock = this._dockPanel;
     const mode = options.mode || 'tab-after';
-    let ref: Widget | null = null;
+    let ref: Widget | null = this.currentWidget;
 
     if (options.ref) {
       ref = find(dock.widgets(), value => value.id === options.ref!) || null;
     }
+
+    // Add widget ID to tab so that we can get a handle on the tab's widget
+    // (for context menu support)
+    widget.title.dataset = { ...widget.title.dataset, id: widget.id };
+
     dock.addWidget(widget, { mode, ref });
 
     // The dock panel doesn't account for placement information while
@@ -918,16 +931,7 @@ export class LabShell extends Widget implements JupyterFrontEnd.IShell {
    * Handle a change to the layout.
    */
   private _onLayoutModified(): void {
-    // The dock can emit layout modified signals while in transient
-    // states (for instance, when switching from single-document to
-    // multiple-document mode). In those states, it can be unreliable
-    // for the signal consumers to query layout properties.
-    // We fix this by debouncing the layout modified signal so that it
-    // is only emitted after rearranging is done.
-    window.clearTimeout(this._debouncer);
-    this._debouncer = window.setTimeout(() => {
-      this._layoutModified.emit(undefined);
-    }, 0);
+    void this._layoutDebouncer.invoke();
   }
 
   /**
@@ -958,6 +962,9 @@ export class LabShell extends Widget implements JupyterFrontEnd.IShell {
   private _dockPanel: DockPanel;
   private _isRestored = false;
   private _layoutModified = new Signal<this, void>(this);
+  private _layoutDebouncer = new Debouncer(() => {
+    this._layoutModified.emit(undefined);
+  }, 0);
   private _leftHandler: Private.SideBarHandler;
   private _restored = new PromiseDelegate<ILabShell.ILayout>();
   private _rightHandler: Private.SideBarHandler;
@@ -965,7 +972,6 @@ export class LabShell extends Widget implements JupyterFrontEnd.IShell {
   private _headerPanel: Panel;
   private _topPanel: Panel;
   private _bottomPanel: Panel;
-  private _debouncer = 0;
   private _mainOptionsCache = new Map<Widget, DocumentRegistry.IOpenOptions>();
   private _sideOptionsCache = new Map<Widget, DocumentRegistry.IOpenOptions>();
 }
@@ -1022,7 +1028,6 @@ namespace Private {
      * Construct a new side bar handler.
      */
     constructor(side: string) {
-      this._side = side;
       this._sideBar = new TabBar<Widget>({
         insertBehavior: 'none',
         removeBehavior: 'none',
@@ -1194,12 +1199,6 @@ namespace Private {
         newWidget.show();
       }
       this._lastCurrent = newWidget || oldWidget;
-      if (newWidget) {
-        const id = newWidget.id;
-        document.body.setAttribute(`data-${this._side}-sidebar-widget`, id);
-      } else {
-        document.body.removeAttribute(`data-${this._side}-sidebar-widget`);
-      }
       this._refreshVisibility();
     }
 
@@ -1226,7 +1225,6 @@ namespace Private {
     }
 
     private _items = new Array<Private.IRankItem>();
-    private _side: string;
     private _sideBar: TabBar<Widget>;
     private _stackedPanel: StackedPanel;
     private _lastCurrent: Widget | null;

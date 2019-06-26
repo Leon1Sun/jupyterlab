@@ -1,10 +1,14 @@
 {
   "name": "@jupyterlab/documentsearch-extension",
-  "version": "1.0.0-alpha.8",
+  "version": "1.0.0-rc.0",
   "description": "Search document types",
   "homepage": "https://github.com/jupyterlab/jupyterlab",
   "bugs": {
     "url": "https://github.com/jupyterlab/jupyterlab/issues"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/jupyterlab/jupyterlab.git"
   },
   "license": "BSD-3-Clause",
   "author": "Project Jupyter",
@@ -13,14 +17,14 @@
     "schema/*.json",
     "style/**/*.{css,eot,gif,html,jpg,json,png,svg,woff2,ttf}"
   ],
+  "sideEffects": [
+    "style/**/*"
+  ],
   "main": "lib/index.js",
   "types": "lib/index.d.ts",
+  "style": "style/index.css",
   "directories": {
     "lib": "lib/"
-  },
-  "repository": {
-    "type": "git",
-    "url": "https://github.com/jupyterlab/jupyterlab.git"
   },
   "scripts": {
     "build": "tsc -b",
@@ -29,14 +33,15 @@
     "watch": "tsc -w --listEmittedFiles"
   },
   "dependencies": {
-    "@jupyterlab/application": "^1.0.0-alpha.6",
-    "@jupyterlab/apputils": "^1.0.0-alpha.6",
-    "@jupyterlab/documentsearch": "^1.0.0-alpha.7",
-    "@jupyterlab/mainmenu": "^1.0.0-alpha.6"
+    "@jupyterlab/application": "^1.0.0-rc.0",
+    "@jupyterlab/apputils": "^1.0.0-rc.0",
+    "@jupyterlab/documentsearch": "^1.0.0-rc.0",
+    "@jupyterlab/mainmenu": "^1.0.0-rc.0",
+    "@phosphor/widgets": "^1.8.0"
   },
   "devDependencies": {
     "rimraf": "~2.6.2",
-    "typescript": "~3.4.3"
+    "typescript": "~3.5.1"
   },
   "publishConfig": {
     "access": "public"

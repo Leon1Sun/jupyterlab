@@ -17,6 +17,9 @@ export class SearchInstance implements IDisposable {
     this._widget = widget;
     this._activeProvider = searchProvider;
 
+    const initialQuery = this._activeProvider.getInitialQuery(this._widget);
+    this._displayState.searchText = initialQuery || '';
+
     this._searchWidget = createSearchOverlay({
       widgetChanged: this._displayUpdateSignal,
       overlayState: this._displayState,
@@ -35,15 +38,14 @@ export class SearchInstance implements IDisposable {
       this.dispose();
     });
     this._searchWidget.disposed.connect(() => {
+      this._widget.activate();
       this.dispose();
     });
 
     // TODO: this does not update if the toolbar changes height.
     if (this._widget instanceof MainAreaWidget) {
       // Offset the position of the search widget to not cover the toolbar.
-      this._searchWidget.node.style.top = `${
-        this._widget.toolbar.node.clientHeight
-      }px`;
+      this._searchWidget.node.style.top = `${this._widget.toolbar.node.clientHeight}px`;
     }
     this._displaySearchWidget();
   }
@@ -67,9 +69,11 @@ export class SearchInstance implements IDisposable {
    */
   focusInput(): void {
     this._displayState.forceFocus = true;
+    this._displayState.searchInputFocused = true;
 
     // Trigger a rerender without resetting the forceFocus.
     this._displayUpdateSignal.emit(this._displayState);
+    this._displayState.forceFocus = false;
   }
 
   /**

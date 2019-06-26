@@ -286,6 +286,10 @@ export class CellTypeSwitcher extends ReactWidget {
         onChange={this.handleChange}
         onKeyDown={this.handleKeyDown}
         value={value}
+        iconProps={{
+          icon: <span className="jp-MaterialIcon jp-DownCaretIcon bp3-icon" />
+        }}
+        aria-label="Cell type"
         minimal
       >
         <option value="-">-</option>

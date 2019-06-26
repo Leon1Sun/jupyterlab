@@ -10,14 +10,13 @@ import { Menu, Widget } from '@phosphor/widgets';
 import {
   ILabShell,
   JupyterFrontEnd,
-  JupyterFrontEndPlugin
+  JupyterFrontEndPlugin,
+  IRouter
 } from '@jupyterlab/application';
 
 import { ICommandPalette, showDialog, Dialog } from '@jupyterlab/apputils';
 
 import { PageConfig, URLExt } from '@jupyterlab/coreutils';
-
-import { IInspector } from '@jupyterlab/inspector';
 
 import {
   IMainMenu,
@@ -50,8 +49,6 @@ export namespace CommandIDs {
 
   export const find = 'editmenu:find';
 
-  export const findAndReplace = 'editmenu:find-and-replace';
-
   export const goToLine = 'editmenu:go-to-line';
 
   export const openFile = 'filemenu:open';
@@ -60,7 +57,9 @@ export namespace CommandIDs {
 
   export const createConsole = 'filemenu:create-console';
 
-  export const quit = 'filemenu:quit';
+  export const shutdown = 'filemenu:shutdown';
+
+  export const logout = 'filemenu:logout';
 
   export const openKernel = 'kernelmenu:open';
 
@@ -115,13 +114,13 @@ export namespace CommandIDs {
  */
 const plugin: JupyterFrontEndPlugin<IMainMenu> = {
   id: '@jupyterlab/mainmenu-extension:plugin',
-  requires: [ICommandPalette],
-  optional: [IInspector, ILabShell],
+  requires: [ICommandPalette, IRouter],
+  optional: [ILabShell],
   provides: IMainMenu,
   activate: (
     app: JupyterFrontEnd,
     palette: ICommandPalette,
-    inspector: IInspector | null,
+    router: IRouter,
     labShell: ILabShell | null
   ): IMainMenu => {
     const { commands } = app;
@@ -140,7 +139,7 @@ const plugin: JupyterFrontEndPlugin<IMainMenu> = {
 
     // Create the application menus.
     createEditMenu(app, menu.editMenu);
-    createFileMenu(app, menu.fileMenu, inspector);
+    createFileMenu(app, menu.fileMenu, router);
     createKernelMenu(app, menu.kernelMenu);
     createRunMenu(app, menu.runMenu);
     createSettingsMenu(app, menu.settingsMenu);
@@ -200,7 +199,11 @@ const plugin: JupyterFrontEndPlugin<IMainMenu> = {
     // Add some of the commands defined here to the command palette.
     if (menu.fileMenu.quitEntry) {
       palette.addItem({
-        command: CommandIDs.quit,
+        command: CommandIDs.shutdown,
+        category: 'Main Area'
+      });
+      palette.addItem({
+        command: CommandIDs.logout,
         category: 'Main Area'
       });
     }
@@ -272,20 +275,6 @@ export function createEditMenu(app: JupyterFrontEnd, menu: EditMenu): void {
     10
   );
 
-  // Add the find-replace command to the Edit menu.
-  commands.addCommand(CommandIDs.findAndReplace, {
-    label: 'Find and Replace…',
-    isEnabled: Private.delegateEnabled(
-      app,
-      menu.findReplacers,
-      'findAndReplace'
-    ),
-    execute: Private.delegateExecute(app, menu.findReplacers, 'findAndReplace')
-  });
-  menu.addGroup(
-    [{ command: CommandIDs.find }, { command: CommandIDs.findAndReplace }],
-    200
-  );
   commands.addCommand(CommandIDs.goToLine, {
     label: 'Go to Line…',
     isEnabled: Private.delegateEnabled(app, menu.goToLiners, 'goToLine'),
@@ -300,11 +289,14 @@ export function createEditMenu(app: JupyterFrontEnd, menu: EditMenu): void {
 export function createFileMenu(
   app: JupyterFrontEnd,
   menu: FileMenu,
-  inspector: IInspector | null
+  router: IRouter
 ): void {
   const commands = menu.menu.commands;
 
   // Add a delegator command for closing and cleaning up an activity.
+  // This one is a bit different, in that we consider it enabled
+  // even if it cannot find a delegate for the activity.
+  // In that case, we instead call the application `close` command.
   commands.addCommand(CommandIDs.closeAndCleanup, {
     label: () => {
       const action = Private.delegateLabel(
@@ -315,16 +307,22 @@ export function createFileMenu(
       const name = Private.delegateLabel(app, menu.closeAndCleaners, 'name');
       return `Close and ${action ? ` ${action} ${name}` : 'Shutdown'}`;
     },
-    isEnabled: Private.delegateEnabled(
-      app,
-      menu.closeAndCleaners,
-      'closeAndCleanup'
-    ),
-    execute: Private.delegateExecute(
-      app,
-      menu.closeAndCleaners,
-      'closeAndCleanup'
-    )
+    isEnabled: () =>
+      !!app.shell.currentWidget && !!app.shell.currentWidget.title.closable,
+    execute: () => {
+      // Check if we have a registered delegate. If so, call that.
+      if (
+        Private.delegateEnabled(app, menu.closeAndCleaners, 'closeAndCleanup')()
+      ) {
+        return Private.delegateExecute(
+          app,
+          menu.closeAndCleaners,
+          'closeAndCleanup'
+        )();
+      }
+      // If we have no delegate, call the top-level application close.
+      return app.commands.execute('application:close');
+    }
   });
 
   // Add a delegator command for creating a console for an activity.
@@ -342,14 +340,17 @@ export function createFileMenu(
     execute: Private.delegateExecute(app, menu.consoleCreators, 'createConsole')
   });
 
-  commands.addCommand(CommandIDs.quit, {
-    label: 'Quit',
-    caption: 'Quit JupyterLab',
+  commands.addCommand(CommandIDs.shutdown, {
+    label: 'Shut Down',
+    caption: 'Shut down JupyterLab',
     execute: () => {
       return showDialog({
-        title: 'Quit confirmation',
-        body: 'Please confirm you want to quit JupyterLab.',
-        buttons: [Dialog.cancelButton(), Dialog.warnButton({ label: 'Quit' })]
+        title: 'Shutdown confirmation',
+        body: 'Please confirm you want to shut down JupyterLab.',
+        buttons: [
+          Dialog.cancelButton(),
+          Dialog.warnButton({ label: 'Shut Down' })
+        ]
       }).then(result => {
         if (result.button.accept) {
           let setting = ServerConnection.makeSettings();
@@ -362,9 +363,16 @@ export function createFileMenu(
             .then(result => {
               if (result.ok) {
                 // Close this window if the shutdown request has been successful
-                let body = document.createElement('div');
-                body.innerHTML = `<p>You have shut down the Jupyter server. You can now close this tab.</p>
-                  <p>To use JupyterLab again, you will need to relaunch it.</p>`;
+                const body = document.createElement('div');
+                const p1 = document.createElement('p');
+                p1.textContent =
+                  'You have shut down the Jupyter server. You can now close this tab.';
+                const p2 = document.createElement('p');
+                p2.textContent =
+                  'To use JupyterLab again, you will need to relaunch it.';
+
+                body.appendChild(p1);
+                body.appendChild(p2);
                 void showDialog({
                   title: 'Server stopped',
                   body: new Widget({ node: body }),
@@ -383,24 +391,32 @@ export function createFileMenu(
     }
   });
 
+  commands.addCommand(CommandIDs.logout, {
+    label: 'Log Out',
+    caption: 'Log out of JupyterLab',
+    execute: () => {
+      router.navigate('/logout', { hard: true });
+    }
+  });
+
   // Add the new group
   const newGroup = [
     { type: 'submenu' as Menu.ItemType, submenu: menu.newMenu.menu },
     { command: 'filebrowser:create-main-launcher' }
   ];
 
+  const openGroup = [{ command: 'filebrowser:open-path' }];
+
   const newViewGroup = [
     { command: 'docmanager:clone' },
-    { command: CommandIDs.createConsole },
-    inspector ? { command: 'inspector:open' } : null,
-    { command: 'docmanager:open-direct' }
+    { command: CommandIDs.createConsole }
   ].filter(item => !!item);
 
   // Add the close group
   const closeGroup = [
-    'docmanager:close',
+    'application:close',
     'filemenu:close-and-cleanup',
-    'docmanager:close-all-files'
+    'application:close-all'
   ].map(command => {
     return { command };
   });
@@ -424,13 +440,19 @@ export function createFileMenu(
   });
 
   // Add the quit group.
-  const quitGroup = [{ command: 'filemenu:quit' }];
+  const quitGroup = [
+    { command: 'filemenu:logout' },
+    { command: 'filemenu:shutdown' }
+  ];
+  const printGroup = [{ command: 'apputils:print' }];
 
   menu.addGroup(newGroup, 0);
-  menu.addGroup(newViewGroup, 1);
-  menu.addGroup(closeGroup, 2);
-  menu.addGroup(saveGroup, 3);
-  menu.addGroup(reGroup, 4);
+  menu.addGroup(openGroup, 1);
+  menu.addGroup(newViewGroup, 2);
+  menu.addGroup(closeGroup, 3);
+  menu.addGroup(saveGroup, 4);
+  menu.addGroup(reGroup, 5);
+  menu.addGroup(printGroup, 98);
   if (menu.quitEntry) {
     menu.addGroup(quitGroup, 99);
   }
@@ -487,23 +509,23 @@ export function createKernelMenu(app: JupyterFrontEnd, menu: KernelMenu): void {
   });
 
   commands.addCommand(CommandIDs.shutdownKernel, {
-    label: 'Shutdown Kernel',
+    label: 'Shut Down Kernel',
     isEnabled: Private.delegateEnabled(app, menu.kernelUsers, 'shutdownKernel'),
     execute: Private.delegateExecute(app, menu.kernelUsers, 'shutdownKernel')
   });
 
   commands.addCommand(CommandIDs.shutdownAllKernels, {
-    label: 'Shutdown All Kernels…',
+    label: 'Shut Down All Kernels…',
     isEnabled: () => {
       return app.serviceManager.sessions.running().next() !== undefined;
     },
     execute: () => {
       return showDialog({
-        title: 'Shutdown All?',
+        title: 'Shut Down All?',
         body: 'Shut down all kernels?',
         buttons: [
           Dialog.cancelButton(),
-          Dialog.warnButton({ label: 'SHUTDOWN' })
+          Dialog.warnButton({ label: 'Shut Down All' })
         ]
       }).then(result => {
         if (result.button.accept) {

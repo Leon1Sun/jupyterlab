@@ -5,7 +5,7 @@ import { IEditorMimeTypeService } from '@jupyterlab/codeeditor';
 
 import { ABCWidgetFactory, DocumentRegistry } from '@jupyterlab/docregistry';
 
-import { RenderMimeRegistry } from '@jupyterlab/rendermime';
+import { IRenderMimeRegistry } from '@jupyterlab/rendermime';
 
 import { ToolbarItems } from './default-toolbar';
 
@@ -42,7 +42,7 @@ export class NotebookWidgetFactory extends ABCWidgetFactory<
   /*
    * The rendermime instance.
    */
-  readonly rendermime: RenderMimeRegistry;
+  readonly rendermime: IRenderMimeRegistry;
 
   /**
    * The content factory used by the widget factory.
@@ -81,16 +81,19 @@ export class NotebookWidgetFactory extends ABCWidgetFactory<
    * The factory will start the appropriate kernel.
    */
   protected createNewWidget(
-    context: DocumentRegistry.IContext<INotebookModel>
+    context: DocumentRegistry.IContext<INotebookModel>,
+    source?: NotebookPanel
   ): NotebookPanel {
-    let rendermime = this.rendermime.clone({ resolver: context.urlResolver });
-
     let nbOptions = {
-      rendermime,
+      rendermime: source
+        ? source.content.rendermime
+        : this.rendermime.clone({ resolver: context.urlResolver }),
       contentFactory: this.contentFactory,
       mimeTypeService: this.mimeTypeService,
-      editorConfig: this._editorConfig,
-      notebookConfig: this._notebookConfig
+      editorConfig: source ? source.content.editorConfig : this._editorConfig,
+      notebookConfig: source
+        ? source.content.notebookConfig
+        : this._notebookConfig
     };
     let content = this.contentFactory.createNotebook(nbOptions);
 
@@ -122,7 +125,7 @@ export namespace NotebookWidgetFactory {
     /*
      * A rendermime instance.
      */
-    rendermime: RenderMimeRegistry;
+    rendermime: IRenderMimeRegistry;
 
     /**
      * A notebook panel content factory.

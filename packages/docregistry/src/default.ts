@@ -287,6 +287,7 @@ export abstract class ABCWidgetFactory<
     this._modelName = options.modelName || 'text';
     this._preferKernel = !!options.preferKernel;
     this._canStartKernel = !!options.canStartKernel;
+    this._shutdownOnClose = !!options.shutdownOnClose;
     this._toolbarFactory = options.toolbarFactory;
   }
 
@@ -369,14 +370,24 @@ export abstract class ABCWidgetFactory<
   }
 
   /**
+   * Whether the kernel should be shutdown when the widget is closed.
+   */
+  get shutdownOnClose(): boolean {
+    return this._shutdownOnClose;
+  }
+  set shutdownOnClose(value: boolean) {
+    this._shutdownOnClose = value;
+  }
+
+  /**
    * Create a new widget given a document model and a context.
    *
    * #### Notes
    * It should emit the [widgetCreated] signal with the new widget.
    */
-  createNew(context: DocumentRegistry.IContext<U>): T {
+  createNew(context: DocumentRegistry.IContext<U>, source?: T): T {
     // Create the new widget
-    const widget = this.createNewWidget(context);
+    const widget = this.createNewWidget(context, source);
 
     // Add toolbar items
     let items: DocumentRegistry.IToolbarItem[];
@@ -398,7 +409,10 @@ export abstract class ABCWidgetFactory<
   /**
    * Create a widget for a context.
    */
-  protected abstract createNewWidget(context: DocumentRegistry.IContext<U>): T;
+  protected abstract createNewWidget(
+    context: DocumentRegistry.IContext<U>,
+    source?: T
+  ): T;
 
   /**
    * Default factory for toolbar items to be added after the widget is created.
@@ -414,6 +428,7 @@ export abstract class ABCWidgetFactory<
   private _name: string;
   private _readOnly: boolean;
   private _canStartKernel: boolean;
+  private _shutdownOnClose: boolean;
   private _preferKernel: boolean;
   private _modelName: string;
   private _fileTypes: string[];

@@ -200,6 +200,11 @@ export namespace IClientSession {
     readonly canStart?: boolean;
 
     /**
+     * Whether a kernel needs to be close with the associated session
+     */
+    readonly shutdownOnClose?: boolean;
+
+    /**
      * Whether to auto-start the default kernel if no matching kernel is found.
      */
     readonly autoStartDefault?: boolean;
@@ -363,6 +368,11 @@ export class ClientSession implements IClientSession {
     }
     this._isDisposed = true;
     if (this._session) {
+      if (this.kernelPreference.shutdownOnClose) {
+        this._session.shutdown().catch(reason => {
+          console.error(`Kernel not shut down ${reason}`);
+        });
+      }
       this._session = null;
     }
     if (this._dialog) {
@@ -591,8 +601,8 @@ export class ClientSession implements IClientSession {
       return Promise.resolve();
     }
     const buttons = cancelable
-      ? [Dialog.cancelButton(), Dialog.okButton({ label: 'SELECT' })]
-      : [Dialog.okButton({ label: 'SELECT' })];
+      ? [Dialog.cancelButton(), Dialog.okButton({ label: 'Select' })]
+      : [Dialog.okButton({ label: 'Select' })];
 
     let dialog = (this._dialog = new Dialog({
       title: 'Select Kernel',
@@ -868,26 +878,25 @@ export namespace ClientSession {
    *
    * Returns a promise resolving with whether the kernel was restarted.
    */
-  export function restartKernel(
+  export async function restartKernel(
     kernel: Kernel.IKernelConnection
   ): Promise<boolean> {
-    let restartBtn = Dialog.warnButton({ label: 'RESTART ' });
-    return showDialog({
+    let restartBtn = Dialog.warnButton({ label: 'Restart' });
+    const result = await showDialog({
       title: 'Restart Kernel?',
       body:
         'Do you want to restart the current kernel? All variables will be lost.',
       buttons: [Dialog.cancelButton(), restartBtn]
-    }).then(result => {
-      if (kernel.isDisposed) {
-        return Promise.resolve(false);
-      }
-      if (result.button.accept) {
-        return kernel.restart().then(() => {
-          return true;
-        });
-      }
-      return false;
     });
+
+    if (kernel.isDisposed) {
+      return false;
+    }
+    if (result.button.accept) {
+      await kernel.restart();
+      return true;
+    }
+    return false;
   }
 
   /**
@@ -976,7 +985,7 @@ namespace Private {
     // Create the dialog body.
     let body = document.createElement('div');
     let text = document.createElement('label');
-    text.innerHTML = `Select kernel for: "${session.name}"`;
+    text.textContent = `Select kernel for: "${session.name}"`;
     body.appendChild(text);
 
     let options = getKernelSearch(session);

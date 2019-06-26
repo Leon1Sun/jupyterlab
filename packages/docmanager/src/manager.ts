@@ -17,8 +17,6 @@ import { Contents, Kernel, ServiceManager } from '@jupyterlab/services';
 
 import { ArrayExt, find } from '@phosphor/algorithm';
 
-import { Token } from '@phosphor/coreutils';
-
 import { IDisposable } from '@phosphor/disposable';
 
 import { AttachedProperty } from '@phosphor/properties';
@@ -29,21 +27,9 @@ import { Widget } from '@phosphor/widgets';
 
 import { SaveHandler } from './savehandler';
 
+import { IDocumentManager } from './tokens';
+
 import { DocumentWidgetManager } from './widgetmanager';
-
-/* tslint:disable */
-/**
- * The document registry token.
- */
-export const IDocumentManager = new Token<IDocumentManager>(
-  '@jupyterlab/docmanager:IDocumentManager'
-);
-/* tslint:enable */
-
-/**
- * The interface for a document manager.
- */
-export interface IDocumentManager extends DocumentManager {}
 
 /**
  * The document manager.
@@ -55,7 +41,7 @@ export interface IDocumentManager extends DocumentManager {}
  * open, and a list of widgets for each context. The document manager is in
  * control of the proper closing and disposal of the widgets and contexts.
  */
-export class DocumentManager implements IDisposable {
+export class DocumentManager implements IDocumentManager {
   /**
    * Construct a new document manager.
    */
@@ -426,8 +412,11 @@ export class DocumentManager implements IDisposable {
     path: string,
     factoryName: string
   ): Private.IContext | undefined {
+    const normalizedPath = this.services.contents.normalize(path);
     return find(this._contexts, context => {
-      return context.path === path && context.factoryName === factoryName;
+      return (
+        context.path === normalizedPath && context.factoryName === factoryName
+      );
     });
   }
 
@@ -440,7 +429,8 @@ export class DocumentManager implements IDisposable {
    * notebook model factory and a text model factory).
    */
   private _contextsForPath(path: string): Private.IContext[] {
-    return this._contexts.filter(context => context.path === path);
+    const normalizedPath = this.services.contents.normalize(path);
+    return this._contexts.filter(context => context.path === normalizedPath);
   }
 
   /**

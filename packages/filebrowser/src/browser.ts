@@ -3,7 +3,7 @@
 
 import { showErrorMessage, Toolbar, ToolbarButton } from '@jupyterlab/apputils';
 
-import { DocumentManager } from '@jupyterlab/docmanager';
+import { IDocumentManager } from '@jupyterlab/docmanager';
 
 import { Contents, ServerConnection } from '@jupyterlab/services';
 
@@ -120,6 +120,19 @@ export class FileBrowser extends Widget {
    */
   selectedItems(): IIterator<Contents.IModel> {
     return this._listing.selectedItems();
+  }
+
+  /**
+   * Select an item by name.
+   *
+   * @param name - The name of the item to select.
+   */
+  async selectItemByName(name: string) {
+    await this._listing.selectItemByName(name);
+  }
+
+  clearSelectedItems() {
+    this._listing.clearSelectedItems();
   }
 
   /**
@@ -244,37 +257,32 @@ export class FileBrowser extends Widget {
    * Handle a connection lost signal from the model.
    */
   private _onConnectionFailure(sender: FileBrowserModel, args: Error): void {
-    if (this._showingError) {
-      return;
+    if (
+      args instanceof ServerConnection.ResponseError &&
+      args.response.status === 404
+    ) {
+      const title = 'Directory not found';
+      args.message = `Directory not found: "${this.model.path}"`;
+      void showErrorMessage(title, args);
     }
-    this._showingError = true;
+  }
 
-    let title = 'Server Connection Error';
-    let networkMsg =
-      'A connection to the Jupyter server could not be established.\n' +
-      'JupyterLab will continue trying to reconnect.\n' +
-      'Check your network connection or Jupyter server configuration.\n';
+  /**
+   * Whether to show active file in file browser
+   */
+  get navigateToCurrentDirectory(): boolean {
+    return this._navigateToCurrentDirectory;
+  }
 
-    // Check for a fetch error.
-    if (args instanceof ServerConnection.NetworkError) {
-      args.message = networkMsg;
-    } else if (args instanceof ServerConnection.ResponseError) {
-      if (args.response.status === 404) {
-        title = 'Directory not found';
-        args.message = `Directory not found: "${this.model.path}"`;
-      }
-    }
-
-    void showErrorMessage(title, args).then(() => {
-      this._showingError = false;
-    });
+  set navigateToCurrentDirectory(value: boolean) {
+    this._navigateToCurrentDirectory = value;
   }
 
   private _crumbs: BreadCrumbs;
   private _listing: DirListing;
-  private _manager: DocumentManager;
-  private _showingError = false;
+  private _manager: IDocumentManager;
   private _directoryPending: boolean;
+  private _navigateToCurrentDirectory: boolean;
 }
 
 /**

@@ -42,6 +42,7 @@ import { Message, MessageLoop } from '@phosphor/messaging';
 import { Widget } from '@phosphor/widgets';
 
 import { FileBrowserModel } from './model';
+import { ISignal, Signal } from '@phosphor/signaling';
 
 /**
  * The class name added to DirListing widget.
@@ -257,6 +258,13 @@ export class DirListing extends Widget {
   }
 
   /**
+   * A signal fired when an item is opened.
+   */
+  get onItemOpened(): ISignal<DirListing, Contents.IModel> {
+    return this._onItemOpened;
+  }
+
+  /**
    * Create an iterator over the listing's selected items.
    *
    * @returns A new iterator over the listing's selected items.
@@ -363,9 +371,7 @@ export class DirListing extends Widget {
         names.push(item.name);
       }
     });
-    let message = `Are you sure you want to permanently delete the ${
-      names.length
-    } files/folders selected?`;
+    let message = `Are you sure you want to permanently delete the ${names.length} files/folders selected?`;
     if (names.length === 1) {
       message = `Are you sure you want to permanently delete: ${names[0]}?`;
     }
@@ -373,7 +379,7 @@ export class DirListing extends Widget {
       return showDialog({
         title: 'Delete',
         body: message,
-        buttons: [Dialog.cancelButton(), Dialog.warnButton({ label: 'DELETE' })]
+        buttons: [Dialog.cancelButton(), Dialog.warnButton({ label: 'Delete' })]
       }).then(result => {
         if (!this.isDisposed && result.button.accept) {
           return this._delete(names);
@@ -440,7 +446,7 @@ export class DirListing extends Widget {
         return undefined;
       })
       .catch(error => {
-        void showErrorMessage('Shutdown kernel', error);
+        void showErrorMessage('Shut down kernel', error);
       });
   }
 
@@ -551,27 +557,34 @@ export class DirListing extends Widget {
   }
 
   /**
+   * Clear the selected items.
+   */
+  clearSelectedItems() {
+    this._selection = Object.create(null);
+  }
+
+  /**
    * Select an item by name.
    *
-   * @parem name - The name of the item to select.
+   * @param name - The name of the item to select.
    *
    * @returns A promise that resolves when the name is selected.
    */
-  selectItemByName(name: string): Promise<void> {
+  async selectItemByName(name: string): Promise<void> {
     // Make sure the file is available.
-    return this.model.refresh().then(() => {
-      if (this.isDisposed) {
-        throw new Error('File browser is disposed.');
-      }
-      let items = this._sortedItems;
-      let index = ArrayExt.findFirstIndex(items, value => value.name === name);
-      if (index === -1) {
-        throw new Error('Item does not exist.');
-      }
-      this._selectItem(index, false);
-      MessageLoop.sendMessage(this, Widget.Msg.UpdateRequest);
-      ElementExt.scrollIntoViewIfNeeded(this.contentNode, this._items[index]);
-    });
+    await this.model.refresh();
+
+    if (this.isDisposed) {
+      throw new Error('File browser is disposed.');
+    }
+    let items = this._sortedItems;
+    let index = ArrayExt.findFirstIndex(items, value => value.name === name);
+    if (index === -1) {
+      throw new Error('Item does not exist.');
+    }
+    this._selectItem(index, false);
+    MessageLoop.sendMessage(this, Widget.Msg.UpdateRequest);
+    ElementExt.scrollIntoViewIfNeeded(this.contentNode, this._items[index]);
   }
 
   /**
@@ -778,6 +791,12 @@ export class DirListing extends Widget {
     this._prevPath = this._model.path;
   }
 
+  onResize(msg: Widget.ResizeMessage) {
+    const { width } =
+      msg.width === -1 ? this.node.getBoundingClientRect() : msg;
+    this.toggleClass('jp-DirListing-narrow', width < 250);
+  }
+
   /**
    * Handle the `'click'` event for the widget.
    */
@@ -858,7 +877,7 @@ export class DirListing extends Widget {
       let altered = event.metaKey || event.shiftKey || event.ctrlKey;
       // See if we need to clear the other selection.
       if (!altered && event.button === 0) {
-        this._selection = Object.create(null);
+        this.clearSelectedItems();
         this._selection[this._softSelection] = true;
         this.update();
       }
@@ -898,6 +917,20 @@ export class DirListing extends Widget {
   }
 
   /**
+   * Handle the opening of an item.
+   */
+  private _handleOpen(item: Contents.IModel): void {
+    this._onItemOpened.emit(item);
+    if (item.type === 'directory') {
+      this._model
+        .cd(item.name)
+        .catch(error => showErrorMessage('Open directory', error));
+    } else {
+      let path = item.path;
+      this._manager.openOrReveal(path);
+    }
+  }
+  /**
    * Handle the `'keydown'` event for the widget.
    */
   private _evtKeydown(event: KeyboardEvent): void {
@@ -918,17 +951,8 @@ export class DirListing extends Widget {
           return;
         }
 
-        let model = this._model;
         let item = this._sortedItems[i];
-        if (item.type === 'directory') {
-          model
-            .cd(item.name)
-            .catch(error => showErrorMessage('Open directory', error));
-        } else {
-          let path = item.path;
-          this._manager.openOrReveal(path);
-        }
-
+        this._handleOpen(item);
         break;
       case 38: // Up arrow
         this.selectPrevious(event.shiftKey);
@@ -989,16 +1013,8 @@ export class DirListing extends Widget {
       return;
     }
 
-    let model = this._model;
     let item = this._sortedItems[i];
-    if (item.type === 'directory') {
-      model
-        .cd(item.name)
-        .catch(error => showErrorMessage('Open directory', error));
-    } else {
-      let path = item.path;
-      this._manager.openOrReveal(path);
-    }
+    this._handleOpen(item);
   }
 
   /**
@@ -1256,7 +1272,7 @@ export class DirListing extends Widget {
       // Default to selecting the only the item.
     } else {
       // Select only the given item.
-      this._selection = Object.create(null);
+      this.clearSelectedItems();
       this._selection[name] = true;
     }
     this.update();
@@ -1343,6 +1359,7 @@ export class DirListing extends Widget {
     this._selectItem(index, false);
 
     return Private.doRename(nameNode, this._editNode).then(newName => {
+      this.node.focus();
       if (!newName || newName === original) {
         this._inRename = false;
         return original;
@@ -1399,7 +1416,7 @@ export class DirListing extends Widget {
     // Selected the given row(s)
     let items = this._sortedItems;
     if (!keepExisting) {
-      this._selection = Object.create(null);
+      this.clearSelectedItems();
     }
     let name = items[index].name;
     this._selection[name] = true;
@@ -1412,7 +1429,7 @@ export class DirListing extends Widget {
   private _onModelRefreshed(): void {
     // Update the selection.
     let existing = Object.keys(this._selection);
-    this._selection = Object.create(null);
+    this.clearSelectedItems();
     each(this._model.items(), item => {
       let name = item.name;
       if (existing.indexOf(name) !== -1) {
@@ -1432,7 +1449,7 @@ export class DirListing extends Widget {
    */
   private _onPathChanged(): void {
     // Reset the selection.
-    this._selection = Object.create(null);
+    this.clearSelectedItems();
     // Update the sorted items.
     this.sort(this.sortState);
   }
@@ -1487,6 +1504,7 @@ export class DirListing extends Widget {
     direction: 'ascending',
     key: 'name'
   };
+  private _onItemOpened = new Signal<DirListing, Contents.IModel>(this);
   private _drag: Drag | null = null;
   private _dragData: {
     pressX: number;
@@ -1751,7 +1769,7 @@ export namespace DirListing {
 
       node.title = model.name;
       // If an item is being edited currently, its text node is unavailable.
-      if (text) {
+      if (text && text.textContent !== model.name) {
         text.textContent = model.name;
       }
 

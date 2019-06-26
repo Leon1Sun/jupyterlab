@@ -25,10 +25,10 @@ import {
 import {
   IRenderMime,
   MimeModel,
-  RenderMimeRegistry
+  IRenderMimeRegistry
 } from '@jupyterlab/rendermime';
 
-import { KernelMessage } from '@jupyterlab/services';
+import { KernelMessage, Kernel } from '@jupyterlab/services';
 
 import { JSONValue, PromiseDelegate, JSONObject } from '@phosphor/coreutils';
 
@@ -974,7 +974,7 @@ export class CodeCell extends Cell {
     this.toggleClass(NO_OUTPUTS_CLASS, force);
   }
 
-  private _rendermime: RenderMimeRegistry = null;
+  private _rendermime: IRenderMimeRegistry = null;
   private _outputHidden = false;
   private _outputsScrolled: boolean;
   private _outputWrapper: Widget = null;
@@ -1000,23 +1000,23 @@ export namespace CodeCell {
     /**
      * The mime renderer for the cell widget.
      */
-    rendermime: RenderMimeRegistry;
+    rendermime: IRenderMimeRegistry;
   }
 
   /**
    * Execute a cell given a client session.
    */
-  export function execute(
+  export async function execute(
     cell: CodeCell,
     session: IClientSession,
     metadata?: JSONObject
-  ): Promise<KernelMessage.IExecuteReplyMsg> {
+  ): Promise<KernelMessage.IExecuteReplyMsg | void> {
     let model = cell.model;
     let code = model.value.text;
     if (!code.trim() || !session.kernel) {
       model.executionCount = null;
       model.outputs.clear();
-      return Promise.resolve(void 0);
+      return;
     }
 
     let cellId = { cellId: model.id };
@@ -1026,17 +1026,29 @@ export namespace CodeCell {
     cell.setPrompt('*');
     model.trusted = true;
 
-    return OutputArea.execute(code, cell.outputArea, session, metadata)
-      .then(msg => {
-        model.executionCount = msg.content.execution_count;
-        return msg;
-      })
-      .catch(e => {
-        if (e.message === 'Canceled') {
-          cell.setPrompt('');
-        }
-        throw e;
-      });
+    let future: Kernel.IFuture<
+      KernelMessage.IExecuteRequestMsg,
+      KernelMessage.IExecuteReplyMsg
+    >;
+    try {
+      const msgPromise = OutputArea.execute(
+        code,
+        cell.outputArea,
+        session,
+        metadata
+      );
+      // Save this execution's future so we can compare in the catch below.
+      future = cell.outputArea.future;
+      const msg = await msgPromise;
+      model.executionCount = msg.content.execution_count;
+      return msg;
+    } catch (e) {
+      // If this is still the current execution, clear the prompt.
+      if (e.message === 'Canceled' && cell.outputArea.future === future) {
+        cell.setPrompt('');
+      }
+      throw e;
+    }
   }
 }
 
@@ -1189,7 +1201,7 @@ export class MarkdownCell extends Cell {
 
   private _monitor: ActivityMonitor<any, any> = null;
   private _renderer: IRenderMime.IRenderer = null;
-  private _rendermime: RenderMimeRegistry;
+  private _rendermime: IRenderMimeRegistry;
   private _rendered = true;
   private _prevText = '';
   private _ready = new PromiseDelegate<void>();
@@ -1211,7 +1223,7 @@ export namespace MarkdownCell {
     /**
      * The mime renderer for the cell widget.
      */
-    rendermime: RenderMimeRegistry;
+    rendermime: IRenderMimeRegistry;
   }
 }
 

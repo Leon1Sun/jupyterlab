@@ -11,8 +11,6 @@ import { IRenderMime } from '@jupyterlab/rendermime-interfaces';
 
 import * as VegaModuleType from 'vega-embed';
 
-import '../style/index.css';
-
 /**
  * The CSS class to add to the Vega and Vega-Lite widget.
  */
@@ -84,7 +82,7 @@ export class RenderedVega extends Widget implements IRenderMime.IRenderer {
     const el = document.createElement('div');
 
     // clear the output before attaching a chart
-    this.node.innerHTML = '';
+    this.node.textContent = '';
     this.node.appendChild(el);
 
     this._result = await vega.default(el, spec, {
@@ -130,19 +128,19 @@ export const rendererFactory: IRenderMime.IRendererFactory = {
 };
 
 const extension: IRenderMime.IExtension = {
-  id: '@jupyterlab/vega-extension:factory',
+  id: '@jupyterlab/vega5-extension:factory',
   rendererFactory,
-  rank: 50,
+  rank: 57,
   dataType: 'json',
   documentWidgetFactoryOptions: [
     {
-      name: 'Vega',
+      name: 'Vega5',
       primaryFileType: 'vega5',
       fileTypes: ['vega5', 'json'],
       defaultFor: ['vega5']
     },
     {
-      name: 'Vega-Lite',
+      name: 'Vega-Lite3',
       primaryFileType: 'vega-lite3',
       fileTypes: ['vega-lite3', 'json'],
       defaultFor: ['vega-lite3']
@@ -188,22 +186,7 @@ namespace Private {
       return vegaReady;
     }
 
-    vegaReady = new Promise((resolve, reject) => {
-      require.ensure(
-        ['vega-embed'],
-        // see https://webpack.js.org/api/module-methods/#require-ensure
-        // this argument MUST be named `require` for the WebPack parser
-        require => {
-          vega = require('vega-embed') as typeof VegaModuleType;
-          resolve(vega);
-        },
-        (error: any) => {
-          console.error(error);
-          reject();
-        },
-        'vega'
-      );
-    });
+    vegaReady = import('./built-vega-embed') as any;
 
     return vegaReady;
   }

@@ -30,6 +30,34 @@ class WidgetFactory extends ABCWidgetFactory<IDocumentWidget> {
   }
 }
 
+/**
+ * A test documentWidget that maintains some state in
+ * count
+ */
+class CloneTestWidget extends DocumentWidget {
+  constructor(args: any) {
+    super(args);
+    this.counter = args.count;
+  }
+  counter: number = 0;
+}
+
+/**
+ * A widget factory for CloneTestWidget widgets
+ */
+class WidgetFactoryWithSharedState extends ABCWidgetFactory<CloneTestWidget> {
+  protected createNewWidget(
+    context: DocumentRegistry.Context,
+    source: CloneTestWidget
+  ): CloneTestWidget {
+    return new CloneTestWidget({
+      context,
+      content: new Widget(),
+      count: source ? source.counter + 1 : 0
+    });
+  }
+}
+
 describe('@jupyterlab/docmanager', () => {
   let manager: DocumentManager;
   let services: ServiceManager.IManager;
@@ -42,6 +70,10 @@ describe('@jupyterlab/docmanager', () => {
     canStartKernel: true,
     preferKernel: true
   });
+  const widgetFactoryShared = new WidgetFactoryWithSharedState({
+    name: 'CloneTestWidget',
+    fileTypes: []
+  });
 
   before(() => {
     services = new ServiceManager({ standby: 'never' });
@@ -51,6 +83,7 @@ describe('@jupyterlab/docmanager', () => {
   beforeEach(() => {
     const registry = new DocumentRegistry({ textModelFactory });
     registry.addWidgetFactory(widgetFactory);
+    registry.addWidgetFactory(widgetFactoryShared);
     DocumentRegistry.defaultFileTypes.forEach(ft => {
       registry.addFileType(ft);
     });
@@ -318,6 +351,22 @@ describe('@jupyterlab/docmanager', () => {
       it('should return undefined if the source widget is not managed', () => {
         widget = new Widget();
         expect(manager.cloneWidget(widget)).to.be.undefined;
+      });
+
+      it('should allow widget factories to have custom clone behavior', () => {
+        widget = manager.createNew('foo', 'CloneTestWidget');
+        const clonedWidget: CloneTestWidget = manager.cloneWidget(
+          widget
+        ) as CloneTestWidget;
+        expect(clonedWidget.counter).to.equal(1);
+        const newWidget: CloneTestWidget = manager.createNew(
+          'bar',
+          'CloneTestWidget'
+        ) as CloneTestWidget;
+        expect(newWidget.counter).to.equal(0);
+        expect(
+          (manager.cloneWidget(clonedWidget) as CloneTestWidget).counter
+        ).to.equal(2);
       });
     });
 

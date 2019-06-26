@@ -10,10 +10,12 @@ import {
 
 import {
   Clipboard,
-  InstanceTracker,
-  IWindowResolver,
   MainAreaWidget,
-  ToolbarButton
+  ToolbarButton,
+  WidgetTracker,
+  ICommandPalette,
+  InputDialog,
+  showErrorMessage
 } from '@jupyterlab/apputils';
 
 import {
@@ -34,6 +36,8 @@ import {
 } from '@jupyterlab/filebrowser';
 
 import { Launcher } from '@jupyterlab/launcher';
+
+import { IMainMenu } from '@jupyterlab/mainmenu';
 
 import { Contents } from '@jupyterlab/services';
 
@@ -69,7 +73,9 @@ namespace CommandIDs {
   // For main browser only.
   export const hideBrowser = 'filebrowser:hide-main';
 
-  export const navigate = 'filebrowser:navigate';
+  export const goToPath = 'filebrowser:go-to-path';
+
+  export const openPath = 'filebrowser:open-path';
 
   export const open = 'filebrowser:open';
 
@@ -93,6 +99,9 @@ namespace CommandIDs {
 
   // For main browser only.
   export const toggleBrowser = 'filebrowser:toggle-main';
+
+  export const toggleNavigateToCurrentDirectory =
+    'filebrowser:toggle-navigate-to-current-directory';
 }
 
 /**
@@ -108,6 +117,7 @@ const browser: JupyterFrontEndPlugin<void> = {
     ILayoutRestorer,
     ISettingRegistry
   ],
+  optional: [ICommandPalette, IMainMenu],
   autoStart: true
 };
 
@@ -135,7 +145,7 @@ const factory: JupyterFrontEndPlugin<IFileBrowserFactory> = {
 const shareFile: JupyterFrontEndPlugin<void> = {
   activate: activateShareFile,
   id: '@jupyterlab/filebrowser-extension:share-file',
-  requires: [IFileBrowserFactory, IWindowResolver],
+  requires: [IFileBrowserFactory],
   autoStart: true
 };
 
@@ -194,7 +204,7 @@ function activateFactory(
   state: IStateDB
 ): IFileBrowserFactory {
   const { commands } = app;
-  const tracker = new InstanceTracker<FileBrowser>({ namespace });
+  const tracker = new WidgetTracker<FileBrowser>({ namespace });
   const createFileBrowser = (
     id: string,
     options: IFileBrowserFactory.IOptions = {}
@@ -239,7 +249,9 @@ function activateBrowser(
   docManager: IDocumentManager,
   labShell: ILabShell,
   restorer: ILayoutRestorer,
-  settingRegistry: ISettingRegistry
+  settingRegistry: ISettingRegistry,
+  commandPalette: ICommandPalette,
+  mainMenu: IMainMenu
 ): void {
   const browser = factory.defaultBrowser;
   const { commands } = app;
@@ -252,7 +264,15 @@ function activateBrowser(
   // responsible for their own restoration behavior, if any.
   restorer.add(browser, namespace);
 
-  addCommands(app, factory, labShell, docManager);
+  addCommands(
+    app,
+    factory,
+    labShell,
+    docManager,
+    settingRegistry,
+    commandPalette,
+    mainMenu
+  );
 
   browser.title.iconClass = 'jp-FolderIcon jp-SideBar-tabIcon';
   browser.title.caption = 'File Browser';
@@ -287,28 +307,29 @@ function activateBrowser(
           navigateToCurrentDirectory = settings.get(
             'navigateToCurrentDirectory'
           ).composite as boolean;
+          browser.navigateToCurrentDirectory = navigateToCurrentDirectory;
         });
         navigateToCurrentDirectory = settings.get('navigateToCurrentDirectory')
           .composite as boolean;
+        browser.navigateToCurrentDirectory = navigateToCurrentDirectory;
       });
 
     // Whether to automatically navigate to a document's current directory
-    labShell.currentChanged.connect((_, change) => {
+    labShell.currentChanged.connect(async (_, change) => {
       if (navigateToCurrentDirectory && change.newValue) {
         const { newValue } = change;
         const context = docManager.contextForWidget(newValue);
         if (context) {
           const { path } = context;
-          Private.navigateToPath(path, factory)
-            .then(() => {
-              labShell.currentWidget.activate();
-            })
-            .catch((reason: any) => {
-              console.warn(
-                `${CommandIDs.navigate} failed to open: ${path}`,
-                reason
-              );
-            });
+          try {
+            await Private.navigateToPath(path, factory);
+            labShell.currentWidget.activate();
+          } catch (reason) {
+            console.warn(
+              `${CommandIDs.goToPath} failed to open: ${path}`,
+              reason
+            );
+          }
         }
       }
     });
@@ -319,8 +340,7 @@ function activateBrowser(
 
 function activateShareFile(
   app: JupyterFrontEnd,
-  factory: IFileBrowserFactory,
-  resolver: IWindowResolver
+  factory: IFileBrowserFactory
 ): void {
   const { commands } = app;
   const { tracker } = factory;
@@ -332,9 +352,7 @@ function activateShareFile(
         return;
       }
       const path = encodeURI(widget.selectedItems().next().path);
-      const tree = PageConfig.getTreeUrl({ workspace: resolver.name });
-
-      Clipboard.copyToSystem(URLExt.join(tree, path));
+      Clipboard.copyToSystem(URLExt.join(PageConfig.getTreeUrl(), path));
     },
     isVisible: () =>
       tracker.currentWidget &&
@@ -351,12 +369,13 @@ function addCommands(
   app: JupyterFrontEnd,
   factory: IFileBrowserFactory,
   labShell: ILabShell,
-  docManager: IDocumentManager
+  docManager: IDocumentManager,
+  settingRegistry: ISettingRegistry,
+  commandPalette: ICommandPalette | null,
+  mainMenu: IMainMenu | null
 ): void {
-  const registry = app.docRegistry;
-  const { commands } = app;
-  const { defaultBrowser: browser } = factory;
-  const { tracker } = factory;
+  const { docRegistry: registry, commands } = app;
+  const { defaultBrowser: browser, tracker } = factory;
 
   commands.addCommand(CommandIDs.del, {
     execute: () => {
@@ -429,21 +448,75 @@ function addCommands(
     }
   });
 
-  commands.addCommand(CommandIDs.navigate, {
-    execute: args => {
+  commands.addCommand(CommandIDs.goToPath, {
+    execute: async args => {
       const path = (args.path as string) || '';
-      return Private.navigateToPath(path, factory)
-        .then(() => {
-          return commands.execute('docmanager:open', { path });
-        })
-        .catch((reason: any) => {
-          console.warn(
-            `${CommandIDs.navigate} failed to open: ${path}`,
-            reason
-          );
-        });
+      try {
+        await Private.navigateToPath(path, factory);
+      } catch (reason) {
+        console.warn(`${CommandIDs.goToPath} failed to go to: ${path}`, reason);
+      }
+      const browserForPath = Private.getBrowserForPath(path, factory);
+      browserForPath.clearSelectedItems();
+      const parts = path.split('/');
+      const name = parts[parts.length - 1];
+      if (name) {
+        await browserForPath.selectItemByName(name);
+      }
+
+      return commands.execute(CommandIDs.showBrowser, { path });
     }
   });
+
+  commands.addCommand(CommandIDs.openPath, {
+    label: args => (args.path ? `Open ${args.path}` : 'Open from Path…'),
+    caption: args => (args.path ? `Open ${args.path}` : 'Open from path'),
+    execute: async ({ path }: { path?: string }) => {
+      if (!path) {
+        path = (await InputDialog.getText({
+          label: 'Path',
+          placeholder: '/path/relative/to/jlab/root',
+          title: 'Open Path',
+          okLabel: 'Open'
+        })).value;
+      }
+      if (!path) {
+        return;
+      }
+      try {
+        let trailingSlash = path !== '/' && path.endsWith('/');
+        if (trailingSlash) {
+          // The normal contents service errors on paths ending in slash
+          path = path.slice(0, path.length - 1);
+        }
+        const browserForPath = Private.getBrowserForPath(path, factory);
+        const { services } = browserForPath.model.manager;
+        const item = await services.contents.get(path, {
+          content: false
+        });
+        if (trailingSlash && item.type !== 'directory') {
+          throw new Error(`Path ${path}/ is not a directory`);
+        }
+        await commands.execute(CommandIDs.goToPath, { path });
+        if (item.type === 'directory') {
+          return;
+        }
+        return commands.execute('docmanager:open', { path });
+      } catch (reason) {
+        if (reason.response && reason.response.status === 404) {
+          reason.message = `Could not find path: ${path}`;
+        }
+        return showErrorMessage('Cannot open', reason);
+      }
+    }
+  });
+  // Add the openPath command to the command palette
+  if (commandPalette) {
+    commandPalette.addItem({
+      command: CommandIDs.openPath,
+      category: 'File Operations'
+    });
+  }
 
   commands.addCommand(CommandIDs.open, {
     execute: args => {
@@ -482,7 +555,7 @@ function addCommands(
           return '';
         }
       } else {
-        return 'jp-MaterialIcon jp-OpenFolderIcon';
+        return 'jp-MaterialIcon jp-FolderIcon';
       }
     },
     label: args => (args['label'] || args['factory'] || 'Open') as string,
@@ -627,7 +700,7 @@ function addCommands(
       }
     },
     iconClass: 'jp-MaterialIcon jp-StopIcon',
-    label: 'Shutdown Kernel'
+    label: 'Shut Down Kernel'
   });
 
   commands.addCommand(CommandIDs.toggleBrowser, {
@@ -644,6 +717,34 @@ function addCommands(
     label: 'New Launcher',
     execute: () => Private.createLauncher(commands, browser)
   });
+
+  commands.addCommand(CommandIDs.toggleNavigateToCurrentDirectory, {
+    label: 'Show Active File in File Browser',
+    isToggled: () => browser.navigateToCurrentDirectory,
+    execute: () => {
+      const value = !browser.navigateToCurrentDirectory;
+      const key = 'navigateToCurrentDirectory';
+      return settingRegistry
+        .set('@jupyterlab/filebrowser-extension:browser', key, value)
+        .catch((reason: Error) => {
+          console.error(`Failed to set navigateToCurrentDirectory setting`);
+        });
+    }
+  });
+
+  if (mainMenu) {
+    mainMenu.settingsMenu.addGroup(
+      [{ command: CommandIDs.toggleNavigateToCurrentDirectory }],
+      5
+    );
+  }
+
+  if (commandPalette) {
+    commandPalette.addItem({
+      command: CommandIDs.toggleNavigateToCurrentDirectory,
+      category: 'File Operations'
+    });
+  }
 
   /**
    * A menu widget that dynamically populates with different widget factories
@@ -851,7 +952,7 @@ namespace Private {
       if (!browserForPath) {
         // warn that no filebrowser could be found for this driveName
         console.warn(
-          `${CommandIDs.navigate} failed to find filebrowser for path: ${path}`
+          `${CommandIDs.goToPath} failed to find filebrowser for path: ${path}`
         );
         return;
       }
@@ -864,27 +965,25 @@ namespace Private {
   }
 
   /**
-   * Navigate to a path.
+   * Navigate to a path or the path containing a file.
    */
-  export function navigateToPath(
+  export async function navigateToPath(
     path: string,
     factory: IFileBrowserFactory
-  ): Promise<any> {
+  ): Promise<Contents.IModel> {
     const browserForPath = Private.getBrowserForPath(path, factory);
     const { services } = browserForPath.model.manager;
     const localPath = services.contents.localPath(path);
 
-    return services.ready
-      .then(() => services.contents.get(path, { content: false }))
-      .then(value => {
-        const { model } = browserForPath;
-        const { restored } = model;
-
-        if (value.type === 'directory') {
-          return restored.then(() => model.cd(`/${localPath}`));
-        }
-
-        return restored.then(() => model.cd(`/${PathExt.dirname(localPath)}`));
-      });
+    await services.ready;
+    let item = await services.contents.get(path, { content: false });
+    const { model } = browserForPath;
+    await model.restored;
+    if (item.type === 'directory') {
+      await model.cd(`/${localPath}`);
+    } else {
+      await model.cd(`/${PathExt.dirname(localPath)}`);
+    }
+    return item;
   }
 }

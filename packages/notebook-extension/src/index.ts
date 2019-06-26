@@ -11,18 +11,19 @@ import {
 import {
   Dialog,
   ICommandPalette,
-  InstanceTracker,
   MainAreaWidget,
-  showDialog
+  showDialog,
+  WidgetTracker
 } from '@jupyterlab/apputils';
 
 import { CodeCell } from '@jupyterlab/cells';
 
-import { CodeEditor, IEditorServices } from '@jupyterlab/codeeditor';
+import { IEditorServices } from '@jupyterlab/codeeditor';
 
 import {
   ISettingRegistry,
   IStateDB,
+  nbformat,
   PageConfig,
   URLExt
 } from '@jupyterlab/coreutils';
@@ -31,7 +32,7 @@ import { IDocumentManager } from '@jupyterlab/docmanager';
 
 import { ArrayExt } from '@phosphor/algorithm';
 
-import { UUID } from '@phosphor/coreutils';
+import { UUID, JSONObject } from '@phosphor/coreutils';
 
 import { DisposableSet } from '@phosphor/disposable';
 
@@ -40,11 +41,11 @@ import { IFileBrowserFactory } from '@jupyterlab/filebrowser';
 import { ILauncher } from '@jupyterlab/launcher';
 
 import {
-  IMainMenu,
   IEditMenu,
   IFileMenu,
   IHelpMenu,
   IKernelMenu,
+  IMainMenu,
   IRunMenu,
   IViewMenu
 } from '@jupyterlab/mainmenu';
@@ -74,6 +75,7 @@ import { ReadonlyJSONObject, JSONValue } from '@phosphor/coreutils';
 import { Message, MessageLoop } from '@phosphor/messaging';
 
 import { Panel, Menu } from '@phosphor/widgets';
+import { CommandRegistry } from '@phosphor/commands';
 
 /**
  * The command IDs used by the notebook plugin.
@@ -421,7 +423,7 @@ function activateNotebookTools(
   };
   let optionsMap: { [key: string]: JSONValue } = {};
   optionsMap.None = null;
-  services.nbconvert.getExportFormats().then(response => {
+  void services.nbconvert.getExportFormats().then(response => {
     if (response) {
       // convert exportList to palette and menu items
       const formatList = Object.keys(response);
@@ -516,9 +518,7 @@ function activateNotebookHandler(
   settingRegistry: ISettingRegistry | null
 ): INotebookTracker {
   const services = app.serviceManager;
-  // An object for tracking the current notebook settings.
-  let editorConfig = StaticNotebook.defaultEditorConfig;
-  let notebookConfig = StaticNotebook.defaultNotebookConfig;
+
   const factory = new NotebookWidgetFactory({
     name: FACTORY,
     fileTypes: ['notebook'],
@@ -528,13 +528,13 @@ function activateNotebookHandler(
     canStartKernel: true,
     rendermime: rendermime,
     contentFactory,
-    editorConfig,
-    notebookConfig,
+    editorConfig: StaticNotebook.defaultEditorConfig,
+    notebookConfig: StaticNotebook.defaultNotebookConfig,
     mimeTypeService: editorServices.mimeTypeService
   });
   const { commands } = app;
   const tracker = new NotebookTracker({ namespace: 'notebook' });
-  const clonedOutputs = new InstanceTracker<
+  const clonedOutputs = new WidgetTracker<
     MainAreaWidget<Private.ClonedOutputArea>
   >({
     namespace: 'cloned-outputs'
@@ -542,13 +542,13 @@ function activateNotebookHandler(
 
   // Handle state restoration.
   if (restorer) {
-    restorer.restore(tracker, {
+    void restorer.restore(tracker, {
       command: 'docmanager:open',
       args: panel => ({ path: panel.context.path, factory: FACTORY }),
       name: panel => panel.context.path,
       when: services.ready
     });
-    restorer.restore(clonedOutputs, {
+    void restorer.restore(clonedOutputs, {
       command: CommandIDs.createOutputView,
       args: widget => ({
         path: widget.content.path,
@@ -574,7 +574,7 @@ function activateNotebookHandler(
     // If the notebook panel does not have an ID, assign it one.
     widget.id = widget.id || `notebook-${++id}`;
     widget.title.icon = NOTEBOOK_ICON_CLASS;
-    // Notify the instance tracker if restore data needs to update.
+    // Notify the widget tracker if restore data needs to update.
     widget.context.pathChanged.connect(() => {
       void tracker.save(widget);
     });
@@ -583,52 +583,45 @@ function activateNotebookHandler(
   });
 
   /**
-   * Update the setting values.
+   * Update the settings of the current tracker.
    */
-  function updateConfig(settings: ISettingRegistry.ISettings): void {
-    let cached = settings.get('codeCellConfig').composite as Partial<
-      CodeEditor.IConfig
-    >;
-    let code = { ...StaticNotebook.defaultEditorConfig.code };
-    Object.keys(code).forEach((key: keyof CodeEditor.IConfig) => {
-      code[key] =
-        cached[key] === null || cached[key] === undefined
-          ? code[key]
-          : cached[key];
+  function updateTracker(options: NotebookPanel.IConfig): void {
+    tracker.forEach(widget => {
+      widget.setConfig(options);
     });
-    cached = settings.get('markdownCellConfig').composite as Partial<
-      CodeEditor.IConfig
-    >;
-    let markdown = { ...StaticNotebook.defaultEditorConfig.markdown };
-    Object.keys(markdown).forEach((key: keyof CodeEditor.IConfig) => {
-      markdown[key] =
-        cached[key] === null || cached[key] === undefined
-          ? markdown[key]
-          : cached[key];
-    });
-    cached = settings.get('rawCellConfig').composite as Partial<
-      CodeEditor.IConfig
-    >;
-    let raw = { ...StaticNotebook.defaultEditorConfig.raw };
-    Object.keys(raw).forEach((key: keyof CodeEditor.IConfig) => {
-      raw[key] =
-        cached[key] === null || cached[key] === undefined
-          ? raw[key]
-          : cached[key];
-    });
-    factory.editorConfig = editorConfig = { code, markdown, raw };
-    factory.notebookConfig = notebookConfig = {
-      scrollPastEnd: settings.get('scrollPastEnd').composite as boolean
-    };
   }
 
   /**
-   * Update the settings of the current tracker.
+   * Update the setting values.
    */
-  function updateTracker(settings: ISettingRegistry.ISettings | null): void {
-    tracker.forEach(widget => {
-      widget.content.editorConfig = editorConfig;
-      widget.content.notebookConfig = notebookConfig;
+  function updateConfig(settings: ISettingRegistry.ISettings): void {
+    let code = {
+      ...StaticNotebook.defaultEditorConfig.code,
+      ...(settings.get('codeCellConfig').composite as JSONObject)
+    };
+
+    let markdown = {
+      ...StaticNotebook.defaultEditorConfig.markdown,
+      ...(settings.get('markdownCellConfig').composite as JSONObject)
+    };
+
+    let raw = {
+      ...StaticNotebook.defaultEditorConfig.raw,
+      ...(settings.get('rawCellConfig').composite as JSONObject)
+    };
+
+    factory.editorConfig = { code, markdown, raw };
+    factory.notebookConfig = {
+      scrollPastEnd: settings.get('scrollPastEnd').composite as boolean,
+      defaultCell: settings.get('defaultCell').composite as nbformat.CellType
+    };
+    factory.shutdownOnClose = settings.get('kernelShutdown')
+      .composite as boolean;
+
+    updateTracker({
+      editorConfig: factory.editorConfig,
+      notebookConfig: factory.notebookConfig,
+      kernelShutdown: factory.shutdownOnClose
     });
   }
 
@@ -640,15 +633,17 @@ function activateNotebookHandler(
     .then(() => fetchSettings)
     .then(settings => {
       updateConfig(settings);
-      updateTracker(settings);
       settings.changed.connect(() => {
         updateConfig(settings);
-        updateTracker(settings);
       });
     })
     .catch((reason: Error) => {
       console.warn(reason.message);
-      updateTracker(null);
+      updateTracker({
+        editorConfig: factory.editorConfig,
+        notebookConfig: factory.notebookConfig,
+        kernelShutdown: factory.shutdownOnClose
+      });
     });
 
   // Add main menu notebook menu.
@@ -713,7 +708,7 @@ function activateNotebookHandler(
           let kernelIconUrl = specs.kernelspecs[name].resources['logo-64x64'];
           if (kernelIconUrl) {
             let index = kernelIconUrl.indexOf('kernelspecs');
-            kernelIconUrl = baseUrl + kernelIconUrl.slice(index);
+            kernelIconUrl = URLExt.join(baseUrl, kernelIconUrl.slice(index));
           }
           disposables.add(
             launcher.add({
@@ -773,26 +768,31 @@ function activateNotebookHandler(
     rank: 7
   });
   app.contextMenu.addItem({
-    type: 'separator',
+    command: CommandIDs.merge,
     selector: '.jp-Notebook .jp-Cell',
     rank: 8
+  });
+  app.contextMenu.addItem({
+    type: 'separator',
+    selector: '.jp-Notebook .jp-Cell',
+    rank: 9
   });
 
   // CodeCell context menu groups
   app.contextMenu.addItem({
     command: CommandIDs.createOutputView,
     selector: '.jp-Notebook .jp-CodeCell',
-    rank: 9
+    rank: 10
   });
   app.contextMenu.addItem({
     type: 'separator',
     selector: '.jp-Notebook .jp-CodeCell',
-    rank: 10
+    rank: 11
   });
   app.contextMenu.addItem({
     command: CommandIDs.clearOutputs,
     selector: '.jp-Notebook .jp-CodeCell',
-    rank: 11
+    rank: 12
   });
 
   // Notebook context menu groups
@@ -858,7 +858,7 @@ function addCommands(
   docManager: IDocumentManager,
   services: ServiceManager,
   tracker: NotebookTracker,
-  clonedOutputs: InstanceTracker<MainAreaWidget>
+  clonedOutputs: WidgetTracker<MainAreaWidget>
 ): void {
   const { commands, shell } = app;
 
@@ -956,6 +956,7 @@ function addCommands(
       const { context, content } = current;
 
       let cell = content.activeCell;
+      let metadata = cell.model.metadata.toJSON();
       let path = context.path;
       // ignore action in non-code cell
       if (!cell || cell.model.type !== 'code') {
@@ -974,14 +975,69 @@ function addCommands(
         const end = editor.getOffsetAt(selection.end);
         code = editor.model.value.text.substring(start, end);
       } else {
-        // no selection, submit whole line and advance
-        code = editor.getLine(selection.start.line);
+        // no selection, find the complete statement around the current line
         const cursor = editor.getCursorPosition();
-        if (cursor.line + 1 !== editor.lineCount) {
-          editor.setCursorPosition({
-            line: cursor.line + 1,
-            column: cursor.column
+        let srcLines = editor.model.value.text.split('\n');
+        let curLine = selection.start.line;
+        while (
+          curLine < editor.lineCount &&
+          !srcLines[curLine].replace(/\s/g, '').length
+        ) {
+          curLine += 1;
+        }
+        // if curLine > 0, we first do a search from beginning
+        let fromFirst = curLine > 0;
+        let firstLine = 0;
+        let lastLine = firstLine + 1;
+        while (true) {
+          code = srcLines.slice(firstLine, lastLine).join('\n');
+          let reply = await current.context.session.kernel.requestIsComplete({
+            // ipython needs an empty line at the end to correctly identify completeness of indented code
+            code: code + '\n\n'
           });
+          if (reply.content.status === 'complete') {
+            if (curLine < lastLine) {
+              // we find a block of complete statement containing the current line, great!
+              while (
+                lastLine < editor.lineCount &&
+                !srcLines[lastLine].replace(/\s/g, '').length
+              ) {
+                lastLine += 1;
+              }
+              editor.setCursorPosition({
+                line: lastLine,
+                column: cursor.column
+              });
+              break;
+            } else {
+              // discard the complete statement before the current line and continue
+              firstLine = lastLine;
+              lastLine = firstLine + 1;
+            }
+          } else if (lastLine < editor.lineCount) {
+            // if incomplete and there are more lines, add the line and check again
+            lastLine += 1;
+          } else if (fromFirst) {
+            // we search from the first line and failed, we search again from current line
+            firstLine = curLine;
+            lastLine = curLine + 1;
+            fromFirst = false;
+          } else {
+            // if we have searched both from first line and from current line and we
+            // cannot find anything, we submit the current line.
+            code = srcLines[curLine];
+            while (
+              curLine + 1 < editor.lineCount &&
+              !srcLines[curLine + 1].replace(/\s/g, '').length
+            ) {
+              curLine += 1;
+            }
+            editor.setCursorPosition({
+              line: curLine + 1,
+              column: cursor.column
+            });
+            break;
+          }
         }
       }
 
@@ -997,7 +1053,8 @@ function addCommands(
       await commands.execute('console:inject', {
         activate: false,
         code,
-        path
+        path,
+        metadata
       });
     },
     isEnabled
@@ -1079,7 +1136,7 @@ function addCommands(
     isEnabled
   });
   commands.addCommand(CommandIDs.closeAndShutdown, {
-    label: 'Close and Shutdown',
+    label: 'Close and Shut Down',
     execute: args => {
       const current = getCurrent(args);
 
@@ -1090,7 +1147,7 @@ function addCommands(
       const fileName = current.title.label;
 
       return showDialog({
-        title: 'Shutdown the notebook?',
+        title: 'Shut down the notebook?',
         body: `Are you sure you want to close "${fileName}"?`,
         buttons: [Dialog.cancelButton(), Dialog.warnButton()]
       }).then(result => {
@@ -1127,14 +1184,11 @@ function addCommands(
         return;
       }
 
-      const notebookPath = URLExt.encodeParts(current.context.path);
-      const url =
-        URLExt.join(
-          services.serverSettings.baseUrl,
-          'nbconvert',
-          args['format'] as string,
-          notebookPath
-        ) + '?download=true';
+      const url = PageConfig.getNBConvertURL({
+        format: args['format'] as string,
+        download: true,
+        path: current.context.path
+      });
       const child = window.open('', '_blank');
       const { context } = current;
 
@@ -1578,7 +1632,7 @@ function addCommands(
       current.context.pathChanged.connect(updateCloned);
       current.content.model.cells.changed.connect(updateCloned);
 
-      // Add the cloned output to the output instance tracker.
+      // Add the cloned output to the output widget tracker.
       void clonedOutputs.add(widget);
 
       // Remove the output view if the parent notebook is closed.
@@ -1594,21 +1648,14 @@ function addCommands(
     label: 'New Console for Notebook',
     execute: args => {
       const current = getCurrent({ ...args, activate: false });
-      const widget = tracker.currentWidget;
 
-      if (!current || !widget) {
+      if (!current) {
         return;
       }
 
-      const options: ReadonlyJSONObject = {
-        path: widget.context.path,
-        preferredLanguage: widget.context.model.defaultKernelLanguage,
-        activate: args['activate'],
-        ref: current.id,
-        insertMode: 'split-bottom'
-      };
-
-      return commands.execute('console:create', options);
+      return Private.createConsole(commands, current, args[
+        'activate'
+      ] as boolean);
     },
     isEnabled
   });
@@ -1924,7 +1971,7 @@ function populateMenus(
     closeAndCleanup: (current: NotebookPanel) => {
       const fileName = current.title.label;
       return showDialog({
-        title: 'Shutdown the notebook?',
+        title: 'Shut down the notebook?',
         body: `Are you sure you want to close "${fileName}"?`,
         buttons: [Dialog.cancelButton(), Dialog.warnButton()]
       }).then(result => {
@@ -2002,16 +2049,7 @@ function populateMenus(
   mainMenu.fileMenu.consoleCreators.add({
     tracker,
     name: 'Notebook',
-    createConsole: current => {
-      const options: ReadonlyJSONObject = {
-        path: current.context.path,
-        preferredLanguage: current.context.model.defaultKernelLanguage,
-        activate: true,
-        ref: current.id,
-        insertMode: 'split-bottom'
-      };
-      return commands.execute('console:create', options);
-    }
+    createConsole: current => Private.createConsole(commands, current, true)
   } as IFileMenu.IConsoleCreator<NotebookPanel>);
 
   // Add some commands to the application view menu.
@@ -2154,6 +2192,29 @@ function populateMenus(
  * A namespace for module private functionality.
  */
 namespace Private {
+  /**
+   * Create a console connected with a notebook kernel
+   *
+   * @param commands Commands registry
+   * @param widget Notebook panel
+   * @param activate Should the console be activated
+   */
+  export function createConsole(
+    commands: CommandRegistry,
+    widget: NotebookPanel,
+    activate?: boolean
+  ): Promise<void> {
+    const options = {
+      path: widget.context.path,
+      preferredLanguage: widget.context.model.defaultKernelLanguage,
+      activate: activate,
+      ref: widget.id,
+      insertMode: 'split-bottom'
+    };
+
+    return commands.execute('console:create', options);
+  }
+
   /**
    * A widget hosting a cloned output area.
    */

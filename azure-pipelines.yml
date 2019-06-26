@@ -15,9 +15,8 @@ jobs:
         Python:
           group: 'python'
           testResultsFiles: 'junit.xml'
-        CLI:
-          group: 'cli'
-          python.version: '3.5'
+        Usage:
+          group: 'usage'
         Docs:
           group: 'docs'
 
